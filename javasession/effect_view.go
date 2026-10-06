@@ -7,6 +7,7 @@ import (
 	"github.com/df-mc/dragonfly/server/entity/effect"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 )
 
@@ -34,6 +35,11 @@ func (s *Session) SendEffect(e effect.Effect) {
 	if !ok {
 		return
 	}
+	if l := s.legacy(); l != nil {
+		if id = version.Map(l.mobEffect, id); id < 0 {
+			return
+		}
+	}
 	dur := int32(e.Duration() / (time.Second / 20))
 	if e.Infinite() {
 		dur = -1
@@ -60,6 +66,11 @@ func (s *Session) SendEffectRemoval(t effect.Type) {
 	if !ok {
 		return
 	}
+	if l := s.legacy(); l != nil {
+		if id = version.Map(l.mobEffect, id); id < 0 {
+			return
+		}
+	}
 	w := s.packet()
 	w.VarInt(selfEntityID)
 	w.VarInt(id)
@@ -74,10 +85,16 @@ var attributeMovementSpeed = v777.BuiltinID("minecraft:attribute", "minecraft:mo
 // then drops its own sprint modifier (handleUpdateAttributes clears modifiers) and moves at
 // exactly Dragonfly's speed, which a vanilla client also does between sprint toggles.
 func (s *Session) SendSpeed(speed float64) {
+	attr := attributeMovementSpeed
+	if l := s.legacy(); l != nil {
+		if attr = version.Map(l.attribute, attr); attr < 0 {
+			return
+		}
+	}
 	w := s.packet()
 	w.VarInt(selfEntityID)
 	w.VarInt(1)
-	w.VarInt(attributeMovementSpeed)
+	w.VarInt(attr)
 	w.Float64(speed)
 	w.VarInt(0) // modifiers
 	s.queue(v777.ClientboundPlayUpdateAttributes, w)
@@ -127,7 +144,7 @@ func (s *Session) writeLivingFxData(w *wire.Writer, e world.Entity) {
 			if ef.Ambient() {
 				a = 38
 			}
-			w.VarInt(particleIDs[ptEntityEffect])
+			w.VarInt(s.particleID(ptEntityEffect))
 			w.Int32(a<<24 | rgb(c))
 		}
 		w.Byte(metaEffectAmbience)

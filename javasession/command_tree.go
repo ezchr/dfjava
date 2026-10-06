@@ -12,6 +12,7 @@ import (
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 )
@@ -265,8 +266,9 @@ func argumentOf(p cmd.ParamInfo, last bool) cmdNode {
 	return n
 }
 
-// encode writes the commands packet body.
-func (t *cmdTree) encode(w *wire.Writer) {
+// encode writes the commands packet body. args maps the parser ids (minecraft:command_argument_type,
+// 26.3) to the client version's (nil: unchanged).
+func (t *cmdTree) encode(w *wire.Writer, args []int32) {
 	w.VarInt(int32(len(t.nodes)))
 	for _, n := range t.nodes {
 		flags := n.kind
@@ -291,7 +293,7 @@ func (t *cmdTree) encode(w *wire.Writer) {
 		if n.kind != nodeArgument {
 			continue
 		}
-		w.VarInt(n.parser)
+		w.VarInt(version.Map(args, n.parser))
 		switch n.parser {
 		case parserInteger, parserDouble:
 			w.Byte(0) // no min, no max
@@ -311,7 +313,11 @@ var cmdSeed = maphash.MakeSeed()
 func (s *Session) sendCommands(c session.Controllable) {
 	t := buildCommandTree(c)
 	w := s.packet()
-	t.encode(w)
+	var args []int32
+	if l := s.legacy(); l != nil {
+		args = l.argumentType
+	}
+	t.encode(w, args)
 	h := maphash.Bytes(cmdSeed, w.B)
 	ts := s.txt()
 	ts.mu.Lock()

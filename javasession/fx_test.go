@@ -15,12 +15,13 @@ import (
 	"github.com/df-mc/dragonfly/server/world/particle"
 	"github.com/df-mc/dragonfly/server/world/sound"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 )
 
 func fxTestSession() *Session {
-	s := &Session{wake: make(chan struct{}, 1)}
+	s := &Session{wake: make(chan struct{}, 1), ver: version.Newest}
 	s.writers.New = func() any { return &wire.Writer{B: make([]byte, 0, 256)} }
 	return s
 }

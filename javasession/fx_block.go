@@ -47,7 +47,7 @@ func (s *Session) blockEvent(pos cube.Pos, b0, b1 byte) {
 }
 
 func (s *Session) blockEventFor(pos cube.Pos, javaBlock int32, b0, b1 byte) {
-	if javaBlock < 0 {
+	if javaBlock = s.blockID(javaBlock); javaBlock < 0 {
 		return
 	}
 	w := s.packet()

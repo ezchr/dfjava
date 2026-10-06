@@ -8,6 +8,7 @@ import (
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/go-gl/mathgl/mgl64"
 )
 
@@ -189,6 +190,10 @@ func (s *Session) positionSync(e world.Entity, pos mgl64.Vec3, rot cube.Rotation
 	t.yaw, t.pitch, t.hd = yaw, pitch, yaw
 	s.entMu.Unlock()
 
+	if !s.ver.Native() {
+		s.positionSync262(id, fits, moved, turned, headTurned, d, yaw, pitch, pos, rot, onGround)
+		return
+	}
 	if fits {
 		props := int32(0)
 		if onGround {
@@ -245,6 +250,65 @@ func (s *Session) positionSync(e world.Entity, pos mgl64.Vec3, rot cube.Rotation
 	s.queue(v777.ClientboundPlayRotateHead, w)
 }
 
+// positionSync262 writes positionSync's packets in the 26.2 layouts: delta moves are three shorts
+// with onGround as a trailing bool (move_entity_rot: yaw, pitch, onGround), and
+// entity_position_sync is position, delta movement (unused by the client), yaw, pitch, onGround.
+// The delta codec is the same as 26.3's.
+func (s *Session) positionSync262(id int32, fits, moved, turned, headTurned bool, d [3]int64, yaw, pitch byte, pos mgl64.Vec3, rot cube.Rotation, onGround bool) {
+	if fits {
+		switch {
+		case moved && turned:
+			w := s.packet()
+			w.VarInt(id)
+			w.Int16(int16(d[0]))
+			w.Int16(int16(d[1]))
+			w.Int16(int16(d[2]))
+			w.Byte(yaw)
+			w.Byte(pitch)
+			w.Bool(onGround)
+			s.queue(v777.ClientboundPlayMoveEntityPosRot, w)
+		case moved:
+			w := s.packet()
+			w.VarInt(id)
+			w.Int16(int16(d[0]))
+			w.Int16(int16(d[1]))
+			w.Int16(int16(d[2]))
+			w.Bool(onGround)
+			s.queue(v777.ClientboundPlayMoveEntityPos, w)
+		case turned:
+			w := s.packet()
+			w.VarInt(id)
+			w.Byte(yaw)
+			w.Byte(pitch)
+			w.Bool(onGround)
+			s.queue(v777.ClientboundPlayMoveEntityRot, w)
+		}
+		if headTurned {
+			w := s.packet()
+			w.VarInt(id)
+			w.Byte(yaw)
+			s.queue(v777.ClientboundPlayRotateHead, w)
+		}
+		return
+	}
+	w := s.packet()
+	w.VarInt(id)
+	w.Float64(pos[0])
+	w.Float64(pos[1])
+	w.Float64(pos[2])
+	w.Float64(0) // delta movement
+	w.Float64(0)
+	w.Float64(0)
+	w.Float32(float32(rot.Yaw()))
+	w.Float32(float32(rot.Pitch()))
+	w.Bool(onGround)
+	s.queue(v777.ClientboundPlayEntityPositionSync, w)
+	w = s.packet()
+	w.VarInt(id)
+	w.Angle(float32(rot.Yaw()))
+	s.queue(v777.ClientboundPlayRotateHead, w)
+}
+
 // setTrack records what an add_entity told the client: the delta base starts at the spawn position.
 func (s *Session) setTrack(id int32, pos mgl64.Vec3, rot cube.Rotation) {
 	y := angleByte(rot.Yaw())
@@ -279,6 +343,15 @@ func (s *Session) ViewEntityAction(e world.Entity, a world.EntityAction) {
 		if id == selfEntityID {
 			return // the client already swung
 		}
+		if !s.ver.Native() {
+			// 26.2 has no swing_animation: animate action 0 swings the main hand (the client casts
+			// the entity to LivingEntity; SwingArmAction is only sent for living entities).
+			w := s.packet()
+			w.VarInt(id)
+			w.Byte(animate262SwingMainHand)
+			s.queue(v777.ClientboundPlayAnimate, w)
+			return
+		}
 		// 26.3 swings with swing_animation (animate no longer has a swing action).
 		w := s.packet()
 		w.VarInt(id)
@@ -288,9 +361,13 @@ func (s *Session) ViewEntityAction(e world.Entity, a world.EntityAction) {
 		s.queue(v777.ClientboundPlaySwingAnimation, w)
 	case entity.HurtAction:
 		// damage_event makes the client play both the hurt animation and the entity's hurt sound.
+		dt := damageGeneric
+		if l := s.legacy(); l != nil {
+			dt = version.Map(l.damageType, dt)
+		}
 		w := s.packet()
 		w.VarInt(id)
-		w.VarInt(damageGeneric)
+		w.VarInt(dt)
 		w.VarInt(0) // no cause entity
 		w.VarInt(0) // no direct entity
 		w.Bool(false)
@@ -303,12 +380,25 @@ func (s *Session) ViewEntityAction(e world.Entity, a world.EntityAction) {
 }
 
 // animate sends an animate packet (26.3 actions: 0 wake up, 1 critical hit, 2 magic critical hit).
+// 26.2 numbers them by id instead: 0 swing main hand, 2 wake up, 3 swing off hand, 4 critical
+// hit, 5 magic critical hit.
 func (s *Session) animate(id int32, action byte) {
+	if !s.ver.Native() {
+		if int(action) >= len(animate262) {
+			return
+		}
+		action = animate262[action]
+	}
 	w := s.packet()
 	w.VarInt(id)
 	w.Byte(action)
 	s.queue(v777.ClientboundPlayAnimate, w)
 }
+
+// animate262 maps the 26.3 animate actions (ordinals) to the 26.2 action ids.
+var animate262 = [...]byte{0: 2, 1: 4, 2: 5}
+
+const animate262SwingMainHand = 0
 
 // ViewBlockUpdate sends a changed block.
 func (s *Session) ViewBlockUpdate(pos cube.Pos, b world.Block, layer int) {

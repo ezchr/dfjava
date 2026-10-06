@@ -1,6 +1,7 @@
 package javasession
 
 import (
+	"bytes"
 	"image/color"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -55,7 +56,7 @@ func (s *Session) ViewParticle(pos mgl64.Vec3, p world.Particle) {
 		s.particleAt(w, false, at, float32(pa.Pitch)/24, 0, 0, 1, 0)
 	case particle.BlockForceField:
 		w := s.particleType(ptBlockMarker)
-		w.VarInt(barrierState)
+		w.VarInt(s.ver.BlockState(barrierState))
 		s.particleAt(w, false, pos, 0, 0, 0, 0, 0)
 	case particle.BoneMeal:
 		s.levelEvent(levelEventBoneMeal, cube.PosFromVec3(pos), 15, false)
@@ -83,7 +84,7 @@ func (s *Session) ViewParticle(pos mgl64.Vec3, p world.Particle) {
 		s.simpleParticle(ptItemSnowball, pos, 8)
 	case particle.EggSmash:
 		w := s.particleType(ptItem)
-		w.VarInt(javaEggItem) // ItemStackTemplate: item, count, empty component patch
+		w.VarInt(s.itemID(javaEggItem)) // ItemStackTemplate: item, count, empty component patch
 		w.VarInt(1)
 		w.VarInt(0)
 		w.VarInt(0)
@@ -114,7 +115,7 @@ func argb(c color.RGBA) int32 {
 // particleType starts a level_particles packet: the particle type, then its options.
 func (s *Session) particleType(t jparticle) *wire.Writer {
 	w := s.packet()
-	w.VarInt(particleIDs[t])
+	w.VarInt(s.particleID(t))
 	return w
 }
 
@@ -128,6 +129,10 @@ func (s *Session) simpleParticle(t jparticle, pos mgl64.Vec3, count int32) {
 // always show, position, spread (or with count 0 the direction), the per-axis max speed, count and
 // randomisation (0: gaussian, like vanilla's /particle).
 func (s *Session) particleAt(w *wire.Writer, override bool, pos mgl64.Vec3, dx, dy, dz, speed float32, count int32) {
+	if !s.ver.Native() {
+		s.particleAt262(w, override, pos, dx, dy, dz, speed, count)
+		return
+	}
 	w.Bool(override)
 	w.Bool(false)
 	w.Float64(pos[0])
@@ -143,3 +148,30 @@ func (s *Session) particleAt(w *wire.Writer, override bool, pos mgl64.Vec3, dx, 
 	w.VarInt(0)
 	s.queue(v777.ClientboundPlayLevelParticles, w)
 }
+
+// particleAt262 writes a 26.2 level_particles packet: override limiter, always show, position,
+// spread, one max speed, an int count and then the particle (w holds its type and options, as
+// particleType and the caller wrote them). A type the client lacks is not sent.
+func (s *Session) particleAt262(opts *wire.Writer, override bool, pos mgl64.Vec3, dx, dy, dz, speed float32, count int32) {
+	if len(opts.B) == 0 || bytes.HasPrefix(opts.B, varIntMinus1) {
+		s.writers.Put(opts) // no such particle in this version
+		return
+	}
+	w := s.packet()
+	w.Bool(override)
+	w.Bool(false)
+	w.Float64(pos[0])
+	w.Float64(pos[1])
+	w.Float64(pos[2])
+	w.Float32(dx)
+	w.Float32(dy)
+	w.Float32(dz)
+	w.Float32(speed)
+	w.Int32(count)
+	w.Raw(opts.B)
+	s.writers.Put(opts)
+	s.queue(v777.ClientboundPlayLevelParticles, w)
+}
+
+// varIntMinus1 is the VarInt -1, the particle type id of a particle the client's version lacks.
+var varIntMinus1 = wire.AppendVarInt(nil, -1)

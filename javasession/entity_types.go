@@ -7,6 +7,8 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	jitem "github.com/ezchr/go-mcjava/item"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
+	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 )
 
@@ -124,6 +126,23 @@ func (s *Session) viewOtherEntity(e world.Entity) {
 	s.viewEntityMeta(e, id)
 }
 
+// encodeItemEntityStack262 writes the item of an item entity for an older client: its own item id
+// and count, without components (their type ids and layouts are the items code's to convert; an
+// item on the ground only shows its model). An item the version lacks is shown as nothing.
+//
+// TODO(items): use the items code's version-aware stack encoder once it has one.
+func encodeItemEntityStack262(w *wire.Writer, js *jitem.Stack, l *legacyIDs) {
+	it := version.Map(l.item, js.ID)
+	if js.Count <= 0 || it <= 0 {
+		jitem.WriteEmpty(w)
+		return
+	}
+	w.VarInt(js.Count)
+	w.VarInt(it)
+	w.VarInt(0) // components added
+	w.VarInt(0) // components removed
+}
+
 // viewEntityMeta sends entity data a freshly spawned entity needs: an item entity's item.
 func (s *Session) viewEntityMeta(e world.Entity, id int32) {
 	if isTextEntity(e) {
@@ -144,7 +163,11 @@ func (s *Session) viewEntityMeta(e world.Entity, id int32) {
 	w.VarInt(id)
 	w.Byte(8)   // ItemEntity.DATA_ITEM
 	w.VarInt(7) // ITEM_STACK serializer
-	js.Encode(w)
+	if l := s.legacy(); l != nil {
+		encodeItemEntityStack262(w, &js, l)
+	} else {
+		js.Encode(w)
+	}
 	w.Byte(0xff)
 	s.queue(v777.ClientboundPlaySetEntityData, w)
 }

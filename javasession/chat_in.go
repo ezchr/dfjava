@@ -52,16 +52,11 @@ func (s *Session) handleTextPacket(id int32, body []byte) (handled bool, err err
 		}
 		s.handleClickAction(ident, payload)
 	case v777.ServerboundPlaySignUpdate:
-		x, y, z := r.Position()
-		var lines [4]string
-		for i := range lines {
-			lines[i] = r.String(384) // vanilla's limit, in UTF-16 units
-		}
-		front := r.VarInt() == 1 // SignTextSlot: BACK 0, FRONT 1
+		pos, lines, front := readSignUpdate(r, s.ver.Native())
 		if r.Err != nil {
 			return true, r.Err
 		}
-		s.editSign(cube.Pos{x, y, z}, front, lines)
+		s.editSign(pos, front, lines)
 	default:
 		return false, nil
 	}
@@ -96,9 +91,12 @@ func (s *Session) OpenSign(pos cube.Pos, frontSide bool) {
 	ts.mu.Unlock()
 	w := s.packet()
 	w.Position(pos[0], pos[1], pos[2])
-	if frontSide {
-		w.VarInt(1)
-	} else {
+	switch {
+	case !s.ver.Native():
+		w.Bool(frontSide) // 26.2: isFrontText
+	case frontSide:
+		w.VarInt(1) // SignTextSlot: BACK 0, FRONT 1
+	default:
 		w.VarInt(0)
 	}
 	s.queue(v777.ClientboundPlayOpenSignEditor, w)
@@ -209,4 +207,20 @@ func signText(lines [4]string) string {
 		t = strings.TrimRight(t[:cut], "\n")
 	}
 	return t
+}
+
+// readSignUpdate reads a sign_update: 26.3 has the four lines, then the side as a SignTextSlot
+// VarInt (BACK 0, FRONT 1); 26.2 has an isFrontText bool before the lines.
+func readSignUpdate(r *wire.Reader, native bool) (pos cube.Pos, lines [4]string, front bool) {
+	x, y, z := r.Position()
+	if !native {
+		front = r.Bool()
+	}
+	for i := range lines {
+		lines[i] = r.String(384) // vanilla's limit, in UTF-16 units
+	}
+	if native {
+		front = r.VarInt() == 1
+	}
+	return cube.Pos{x, y, z}, lines, front
 }

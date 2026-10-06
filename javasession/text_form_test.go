@@ -107,7 +107,7 @@ func TestCommandTree(t *testing.T) {
 		t.Errorf("amount node %+v", n)
 	}
 	var w wire.Writer
-	tr.encode(&w)
+	tr.encode(&w, nil)
 	if r := wire.NewReader(w.B); r.VarInt() != int32(len(tr.nodes)) {
 		t.Error("node count")
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/sound"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 )
@@ -220,8 +221,10 @@ func (s *Session) playSound(pos mgl64.Vec3, t world.Sound, broadcast bool) {
 		s.sound(pos, sndLeverClick, srcBlocks, 0.3, 0.5)
 	case sound.LecternBookPlace:
 		s.sound(pos, sndBookPut, srcBlocks, 1, 1)
-	case sound.SignWaxed: // the wax_on level event only spawns particles in Java
-		s.sound(centre(pos), sndWaxOn, srcBlocks, 1, 1)
+	case sound.SignWaxed: // the wax_on level event only spawns particles in 26.3 (26.2: both)
+		if s.ver.Native() {
+			s.sound(centre(pos), sndWaxOn, srcBlocks, 1, 1)
+		}
 		s.levelEvent(levelEventWaxOn, cube.PosFromVec3(pos), 0, false)
 	case sound.WaxedSignFailedInteraction:
 		s.sound(centre(pos), sndSignWaxedFail, srcBlocks, 1, 1)
@@ -442,6 +445,11 @@ func (s *Session) soundID(pos mgl64.Vec3, id int32, src soundSource, vol, pitch 
 	if id < 0 {
 		return
 	}
+	if l := s.legacy(); l != nil {
+		if id = version.Map(l.sound, id); id < 0 {
+			return
+		}
+	}
 	w := s.packet()
 	w.VarInt(id + 1) // Holder<SoundEvent>: registry id + 1 (0 is an inline event)
 	s.finishSound(w, pos, src, vol, pitch)
@@ -462,10 +470,53 @@ func (s *Session) finishSound(w *wire.Writer, pos mgl64.Vec3, src soundSource, v
 
 // levelEvent writes a level_event; global events play wherever the player is (end portal spawn).
 func (s *Session) levelEvent(typ int32, pos cube.Pos, data int32, global bool) {
+	if l := s.legacy(); l != nil {
+		var ok bool
+		if typ, data, ok = s.levelEvent262(l, typ, pos, data); !ok {
+			return
+		}
+	}
 	w := s.packet()
 	w.Int32(typ)
 	w.Position(pos[0], pos[1], pos[2])
 	w.Int32(data)
 	w.Bool(global)
 	s.queue(v777.ClientboundPlayLevelEvent, w)
+}
+
+// levelEvent262 turns a 26.3 level event into a 26.2 one: data that is a block state or a jukebox
+// song gets the client's id, and the particle-only events 26.3 added (2014-2019) are sent as
+// level_particles instead, or dropped where 26.2 vanilla shows nothing (crack particles of
+// another player's mining). ok is false when no level event is to be sent.
+func (s *Session) levelEvent262(l *legacyIDs, typ int32, pos cube.Pos, data int32) (int32, int32, bool) {
+	switch typ {
+	case levelEventDestroyBlock:
+		return typ, s.ver.BlockState(data), true
+	case levelEventPlayJukeboxSong:
+		data = version.Map(l.jukeboxSong, data)
+		return typ, data, data >= 0
+	case levelEventDestroyNoSound:
+		// Break particles without the sound: block particles over the block.
+		if l.particleBlock >= 0 {
+			w := s.packet()
+			w.VarInt(l.particleBlock)
+			w.VarInt(s.ver.BlockState(data))
+			s.particleAt262(w, false, pos.Vec3Centre(), 0.25, 0.25, 0.25, 0.05, 48)
+		}
+		return 0, 0, false
+	case levelEventDragonEggTeleport, levelEventEndermanTeleport:
+		if l.particlePortal >= 0 {
+			at, spread := pos.Vec3Centre(), float32(0.5)
+			if typ == levelEventEndermanTeleport {
+				at, spread = pos.Vec3Middle().Add(mgl64.Vec3{0, 1, 0}), 0.6
+			}
+			w := s.packet()
+			w.VarInt(l.particlePortal)
+			s.particleAt262(w, false, at, spread, spread, spread, 0.1, 128)
+		}
+		return 0, 0, false
+	case levelEventDestroyProgress:
+		return 0, 0, false
+	}
+	return typ, data, true
 }
