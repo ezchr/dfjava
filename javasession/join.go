@@ -58,6 +58,7 @@ func join(conf Config, jp *jserver.Player) {
 		radius = v
 	}
 	s := newSession(jp, radius, conf.Log)
+	registerProfile(id, jp.Profile.Properties)
 	s.sendLogin(pc, w)
 	if err := conf.Server.AddPlayer(s, pc, w); err != nil {
 		s.log.Info("join refused", "err", err)

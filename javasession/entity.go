@@ -74,7 +74,18 @@ func (s *Session) ViewEntity(e world.Entity) {
 	w.VarInt(1)
 	w.UUID(u)
 	w.String(tabName(p.Name()))
-	w.VarInt(0) // no profile properties: the client picks a default skin from the UUID
+	// Java players' signed textures show their skin; without properties the client picks a
+	// default skin from the UUID.
+	props := profileProperties(u)
+	w.VarInt(int32(len(props)))
+	for _, pr := range props {
+		w.String(pr.Name)
+		w.String(pr.Value)
+		w.Bool(pr.Signature != "")
+		if pr.Signature != "" {
+			w.String(pr.Signature)
+		}
+	}
 	w.VarInt(gameModeID(p.GameMode()))
 	w.Bool(true)
 	w.VarInt(int32(p.Latency() / time.Millisecond))

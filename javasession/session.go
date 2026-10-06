@@ -20,6 +20,7 @@ import (
 	v777 "github.com/ezchr/go-mc/java/v777"
 	"github.com/ezchr/go-mc/java/wire"
 	"github.com/go-gl/mathgl/mgl64"
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 )
 
@@ -198,6 +199,7 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 			}
 		}
 		s.CloseConnection()
+		forgetProfile(uuid.UUID(s.jp.Profile.UUID))
 		s.entMu.Lock()
 		clear(s.entityIDs)
 		s.entMu.Unlock()
