@@ -36,6 +36,7 @@ type Session struct {
 	// Java entity ids of the entities this client sees (it is selfEntityID itself).
 	entMu        sync.Mutex
 	entityIDs    map[*world.EntityHandle]int32
+	tracks       map[int32]*track
 	nextEntityID int32
 
 	chunkRadius int32
@@ -45,14 +46,14 @@ type Session struct {
 	vitalsMu sync.Mutex
 	vitals   vitals
 
-	input      inputState
+	input inputState
 
 	timeMu      sync.Mutex
 	time        int
 	timeStopped bool
-	lastCentre world.ChunkPos
-	centreSent bool
-	closeOnce  sync.Once
+	lastCentre  world.ChunkPos
+	centreSent  bool
+	closeOnce   sync.Once
 
 	// Chunk sending: the client says how many chunks per tick it can take (in thousandths);
 	// one batch waits for its acknowledgement at a time.
@@ -92,6 +93,7 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 		wake:        make(chan struct{}, 1),
 		closed:      make(chan struct{}),
 		entityIDs:   map[*world.EntityHandle]int32{},
+		tracks:      map[int32]*track{},
 		vitals:      vitals{health: 20, food: 20, saturation: 5},
 	}
 	s.chunkRate.Store(9000) // vanilla's starting rate: 9 chunks per tick
@@ -227,6 +229,7 @@ func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.loader = world.NewLoader(int(s.chunkRadius), tx.World(), s)
 	s.loader.Move(tx, pos)
 	s.sendCentre(pos)
+	s.SpawnText(c)
 	go s.tickLoop()
 	go s.readLoop()
 }

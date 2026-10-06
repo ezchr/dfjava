@@ -1,6 +1,7 @@
 package javasession
 
 import (
+	"math"
 	"time"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -44,6 +45,7 @@ func (s *Session) removeEntityID(e world.Entity) (int32, bool) {
 	defer s.entMu.Unlock()
 	id, ok := s.entityIDs[e.H()]
 	delete(s.entityIDs, e.H())
+	delete(s.tracks, id)
 	return id, ok
 }
 
@@ -106,6 +108,8 @@ func (s *Session) ViewEntity(e world.Entity) {
 	w.Angle(float32(rot.Yaw())) // head
 	w.VarInt(0)
 	s.queue(v777.ClientboundPlayAddEntity, w)
+	s.setTrack(id, pos, rot)
+	s.viewPlayerNameTag(p)
 }
 
 // HideEntity removes an entity that left view.
@@ -156,9 +160,93 @@ func (s *Session) ViewEntityTeleport(e world.Entity, pos mgl64.Vec3) {
 	s.positionSync(e, pos, rot, false)
 }
 
+// track is what the client last knew about an entity's position: the base its 26.3 delta packets
+// are relative to (VecDeltaCodec), the last rotation bytes and when it last got a full sync.
+type track struct {
+	base           mgl64.Vec3
+	yaw, pitch, hd byte
+	sinceSync      int
+	synced         bool
+}
+
+func encodeDelta(v float64) int64 { return int64(math.Floor(v*4096 + 0.5)) }
+
+// positionSync moves another entity: a delta move (move_entity_pos/_pos_rot/_rot) when it fits,
+// else a full entity_position_sync, which vanilla also sends every 60 moves to undo drift.
 func (s *Session) positionSync(e world.Entity, pos mgl64.Vec3, rot cube.Rotation, onGround bool) {
 	id, ok := s.entityID(e)
 	if !ok {
+		return
+	}
+	yaw, pitch := angleByte(rot.Yaw()), angleByte(rot.Pitch())
+	s.entMu.Lock()
+	t := s.tracks[id]
+	if t == nil {
+		t = &track{}
+		s.tracks[id] = t
+	}
+	var d [3]int64
+	fits := t.synced && t.sinceSync < 60
+	for i := range d {
+		d[i] = encodeDelta(pos[i]) - encodeDelta(t.base[i])
+		if d[i] < math.MinInt16 || d[i] > math.MaxInt16 {
+			fits = false
+		}
+	}
+	moved := d[0] != 0 || d[1] != 0 || d[2] != 0
+	turned := yaw != t.yaw || pitch != t.pitch
+	headTurned := yaw != t.hd
+	if fits {
+		t.sinceSync++
+		for i := range d {
+			if d[i] != 0 { // the client's VecDeltaCodec.decode
+				t.base[i] = float64(encodeDelta(t.base[i])+d[i]) / 4096
+			}
+		}
+	} else {
+		t.base, t.sinceSync, t.synced = pos, 0, true
+	}
+	t.yaw, t.pitch, t.hd = yaw, pitch, yaw
+	s.entMu.Unlock()
+
+	if fits {
+		props := int32(0)
+		if onGround {
+			props = 1 // bit 0 on ground, step count 0 (a linear delta)
+		}
+		switch {
+		case moved && turned:
+			w := s.packet()
+			w.VarInt(id)
+			w.VarInt(props)
+			w.Int16(int16(d[0]))
+			w.Int16(int16(d[1]))
+			w.Int16(int16(d[2]))
+			w.Byte(yaw)
+			w.Byte(pitch)
+			s.queue(v777.ClientboundPlayMoveEntityPosRot, w)
+		case moved:
+			w := s.packet()
+			w.VarInt(id)
+			w.VarInt(props)
+			w.Int16(int16(d[0]))
+			w.Int16(int16(d[1]))
+			w.Int16(int16(d[2]))
+			s.queue(v777.ClientboundPlayMoveEntityPos, w)
+		case turned:
+			w := s.packet()
+			w.VarInt(id)
+			w.Bool(onGround)
+			w.Byte(yaw)
+			w.Byte(pitch)
+			s.queue(v777.ClientboundPlayMoveEntityRot, w)
+		}
+		if headTurned {
+			w := s.packet()
+			w.VarInt(id)
+			w.Byte(yaw)
+			s.queue(v777.ClientboundPlayRotateHead, w)
+		}
 		return
 	}
 	w := s.packet()
@@ -176,6 +264,17 @@ func (s *Session) positionSync(e world.Entity, pos mgl64.Vec3, rot cube.Rotation
 	w.Angle(float32(rot.Yaw()))
 	s.queue(v777.ClientboundPlayRotateHead, w)
 }
+
+// setTrack records what an add_entity told the client: the delta base starts at the spawn position.
+func (s *Session) setTrack(id int32, pos mgl64.Vec3, rot cube.Rotation) {
+	y := angleByte(rot.Yaw())
+	s.entMu.Lock()
+	s.tracks[id] = &track{base: pos, yaw: y, pitch: angleByte(rot.Pitch()), hd: y, synced: true}
+	s.entMu.Unlock()
+}
+
+// angleByte is an angle in degrees as the 1/256-turn byte Java uses.
+func angleByte(deg float64) byte { return byte(int32(math.Floor(deg * 256 / 360))) }
 
 // ViewEntityVelocity sets an entity's motion; for the player itself this is knockback.
 func (s *Session) ViewEntityVelocity(e world.Entity, vel mgl64.Vec3) {

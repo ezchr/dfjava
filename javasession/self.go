@@ -2,6 +2,7 @@ package javasession
 
 import (
 	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mc/java/v777"
@@ -145,6 +146,9 @@ func (s *Session) ViewEntityState(e world.Entity) {
 	id, ok := s.entityID(e)
 	if !ok {
 		return
+	}
+	if p, ok := e.(*player.Player); ok {
+		s.viewPlayerNameTag(p)
 	}
 	st, ok := e.(stateful)
 	if !ok {

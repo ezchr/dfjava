@@ -50,6 +50,9 @@ func (s *Session) handle(id int32, body []byte) error {
 		s.chunkRate.Store(int64(min(rate, 64) * 1000))
 		s.batchInFlight.Store(false)
 	default:
+		if ok, err := s.handleTextPacket(id, body); ok {
+			return err
+		}
 		if ok, err := s.handleInput(id, body); ok {
 			return err
 		}

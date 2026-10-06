@@ -95,6 +95,7 @@ func (s *Session) viewOtherEntity(e world.Entity) {
 	w.Angle(float32(rot.Yaw()))
 	w.VarInt(data)
 	s.queue(v777.ClientboundPlayAddEntity, w)
+	s.setTrack(id, pos, rot)
 	s.viewEntityMeta(e, id)
 }
 
