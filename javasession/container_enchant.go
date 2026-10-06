@@ -10,14 +10,16 @@ import (
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
+	jitem "github.com/ezchr/go-mcjava/item"
 )
 
 // The enchanting table: Dragonfly's option logic (session/handler_enchanting.go, deterministic for
 // the player's enchantment seed) shown through the Java window's data slots: 0-2 level
 // requirements, 3 the seed, 4-6 an enchantment of each option (Java id), 7-9 its level.
 
-// enchantData is the enchanting window's data for the item in it.
-func enchantData(tx *world.Tx, c session.Controllable, pos cube.Pos, input item.Stack) [10]int32 {
+// enchantData is the enchanting window's data for the item in it, with the enchantment ids of the
+// client's protocol p.
+func enchantData(tx *world.Tx, c session.Controllable, pos cube.Pos, input item.Stack, p *jitem.Proto) [10]int32 {
 	vals := [10]int32{3: int32(c.EnchantmentSeed()) & -16, 4: -1, 5: -1, 6: -1, 7: -1, 8: -1, 9: -1}
 	if input.Empty() || input.Count() != 1 {
 		return vals
@@ -30,7 +32,7 @@ func enchantData(tx *world.Tx, c session.Controllable, pos cube.Pos, input item.
 		vals[i] = int32(costs[i])
 		e := enchants[i][0]
 		if id, ok := item.EnchantmentID(e.Type()); ok && id < len(enchantments().toJava) && enchantments().toJava[id] >= 0 {
-			vals[4+i], vals[7+i] = enchantments().toJava[id], int32(e.Level())
+			vals[4+i], vals[7+i] = p.Enchantment(enchantments().toJava[id]), int32(e.Level())
 		}
 	}
 	return vals

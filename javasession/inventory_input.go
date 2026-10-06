@@ -49,7 +49,7 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 			return true, r.Err
 		}
 		if st.creative.Load() {
-			st.in.DecodeUntrusted(r)
+			st.in.DecodeUntrustedFor(r, st.proto)
 			if r.Err != nil {
 				return true, r.Err
 			}
@@ -64,7 +64,7 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 				return
 			}
 			st.creative.Store(true)
-			st.in.DecodeUntrusted(r)
+			st.in.DecodeUntrustedFor(r, st.proto)
 			if r.Err == nil {
 				s.creativeSlot(c, slot, &st.in)
 			}
@@ -85,9 +85,9 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 		var changed [128]int16 // the slots the client changed (its prediction)
 		for i := range n {
 			changed[i] = r.Int16()
-			hs.Decode(r)
+			hs.DecodeFor(r, st.proto)
 		}
-		hs.Decode(r) // carried
+		hs.DecodeFor(r, st.proto) // carried
 		if r.Err != nil {
 			return true, r.Err
 		}
@@ -115,7 +115,7 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 		for i := range effects {
 			effects[i] = -1
 			if r.Bool() {
-				effects[i] = r.VarInt()
+				effects[i] = st.proto.EffectIn(r.VarInt())
 			}
 		}
 		if r.Err != nil {
@@ -275,7 +275,7 @@ func (st *itemState) creativeStack(js *jitem.Stack, target int) (item.Stack, int
 	count := js.Count
 	js.Count = 1
 	var want, got wire.Writer
-	js.Encode(&want)
+	js.EncodeFor(&want, st.proto)
 	js.Count = count
 	var conv jitem.Stack
 	match := func(ds item.Stack) bool {
@@ -285,7 +285,7 @@ func (st *itemState) creativeStack(js *jitem.Stack, target int) (item.Stack, int
 		got.Reset()
 		javaStack(ds, &conv)
 		conv.Count = 1
-		conv.Encode(&got)
+		conv.EncodeFor(&got, st.proto)
 		return string(got.B) == string(want.B)
 	}
 	n := max(1, int(count))
@@ -784,7 +784,7 @@ func (v *view) quickRoute(js int, it *item.Stack) bool {
 		switch {
 		case js == 0:
 			return v.moveStack(it, inv, end, false)
-		case len(stonecutterFor(*it)) > 0:
+		case len(stonecutterFor(*it, v.st.proto)) > 0:
 			return v.moveStack(it, 0, 1, false)
 		}
 		return between()

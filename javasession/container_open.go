@@ -10,6 +10,7 @@ import (
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 )
 
@@ -70,7 +71,7 @@ func (s *Session) OpenBlockContainer(pos cube.Pos, tx *world.Tx) {
 
 	w := s.packet()
 	w.VarInt(m.id)
-	w.VarInt(m.typ)
+	w.VarInt(version.Map(st.menus, m.typ))
 	title.Write(w)
 	s.queue(v777.ClientboundPlayOpenScreen, w)
 	s.syncWindow(tx, c, m)
@@ -302,7 +303,7 @@ func (s *Session) syncMenuData(tx *world.Tx, c session.Controllable, m *menu, v 
 			vals = [10]int32{durTicks(rem), durTicks(mx), durTicks(cook), m.cookTotal}
 		}
 	case menuBrewing:
-		n = 4
+		n = v.st.brewingData
 		if b, ok := tx.Block(m.pos).(interface {
 			Duration() time.Duration
 			Fuel() (int32, int32)
@@ -317,11 +318,11 @@ func (s *Session) syncMenuData(tx *world.Tx, c session.Controllable, m *menu, v 
 	case menuStonecutter:
 		n, vals[0] = 1, int32(m.sel)
 	case menuEnchanting:
-		n, vals = 10, enchantData(tx, c, m.pos, v.slots[0])
+		n, vals = 10, enchantData(tx, c, m.pos, v.slots[0], v.st.proto)
 	case menuBeacon:
 		n = 3
 		if b, ok := tx.Block(m.pos).(block.Beacon); ok {
-			vals[0], vals[1], vals[2] = int32(b.Level()), beaconEffectData(b.Primary), beaconEffectData(b.Secondary)
+			vals[0], vals[1], vals[2] = int32(b.Level()), beaconEffectData(b.Primary, v.st.proto), beaconEffectData(b.Secondary, v.st.proto)
 		}
 	}
 	for i := range n {
@@ -389,7 +390,9 @@ func (s *Session) ViewBrewingUpdate(prevBrew, brew time.Duration, prevFuel, fuel
 	}
 	s.updateData(m, 0, prevBrew != brew, durTicks(brew))
 	s.updateData(m, 1, prevFuel != fuel, fuel)
-	s.updateData(m, 3, prevTotal != total, total)
+	if s.items().brewingData > 3 {
+		s.updateData(m, 3, prevTotal != total, total)
+	}
 }
 
 func (s *Session) updateData(m *menu, key int, changed bool, val int32) {

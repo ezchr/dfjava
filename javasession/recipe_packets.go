@@ -17,19 +17,25 @@ import (
 // slotDisplayItem is the minecraft:item slot display (registry minecraft:slot_display).
 const slotDisplayItem = 4
 
-// sendRecipes sends update_recipes.
+// sendRecipes sends update_recipes, with the item ids of the client's protocol.
 func (s *Session) sendRecipes() {
 	w := s.packet()
-	w.B = append(w.B, recipesPacket()...)
+	if p := s.items().proto; p != nil {
+		appendRecipes(w, p)
+	} else {
+		w.B = append(w.B, recipesPacket()...)
+	}
 	s.queue(v777.ClientboundPlayUpdateRecipes, w)
 }
 
-var recipesPacket = onceRecipes(func() []byte {
-	type set struct {
-		key string
-		ids []int32
-	}
-	sets := []set{
+// propertySet is a recipe property set: the items a station slot accepts (newest Java ids).
+type propertySet struct {
+	key string
+	ids []int32
+}
+
+var propertySets = onceRecipes(func() []propertySet {
+	sets := []propertySet{
 		{key: "minecraft:smithing_base"}, {key: "minecraft:smithing_template"}, {key: "minecraft:smithing_addition"},
 		{key: "minecraft:furnace_input"}, {key: "minecraft:blast_furnace_input"}, {key: "minecraft:smoker_input"},
 		{key: "minecraft:campfire_input"}, {key: "minecraft:brewing_input"}, {key: "minecraft:brewing_reagent"},
@@ -76,25 +82,52 @@ var recipesPacket = onceRecipes(func() []byte {
 			sets[7].ids = append(sets[7].ids, id)
 		}
 	}
+	return sets
+})
 
+// recipesPacket is the update_recipes body for clients of the newest protocol.
+var recipesPacket = onceRecipes(func() []byte {
 	var w wire.Writer
+	appendRecipes(&w, nil)
+	return w.B
+})
+
+// appendRecipes writes the update_recipes body with the item ids of protocol p (nil: the newest).
+// Items an older protocol shows as one (a stand-in for an item it lacks) are listed once; the
+// stonecutter list keeps every recipe, in the same order.
+func appendRecipes(w *wire.Writer, p *jitem.Proto) {
+	var buf [64]int32
+	ids := func(in []int32) []int32 {
+		if p == nil {
+			return in
+		}
+		out := buf[:0]
+		for _, id := range in {
+			if o := p.Item(id); o >= 0 && !containsID(out, o) {
+				out = append(out, o)
+			}
+		}
+		return out
+	}
+	sets := propertySets()
 	w.VarInt(int32(len(sets)))
 	for _, s := range sets {
 		w.String(s.key)
-		w.VarInt(int32(len(s.ids)))
-		for _, id := range s.ids {
+		in := ids(s.ids)
+		w.VarInt(int32(len(in)))
+		for _, id := range in {
 			w.VarInt(id)
 		}
 	}
 	list := stonecutterRecipes()
 	w.VarInt(int32(len(list)))
 	for _, r := range list {
-		w.VarInt(int32(len(r.in)) + 1) // holder set of items
-		for _, id := range r.in {
+		in := ids(r.in)
+		w.VarInt(int32(len(in)) + 1) // holder set of items
+		for _, id := range in {
 			w.VarInt(id)
 		}
 		w.VarInt(slotDisplayItem)
-		w.VarInt(r.jo)
+		w.VarInt(p.Item(r.jo))
 	}
-	return w.B
-})
+}

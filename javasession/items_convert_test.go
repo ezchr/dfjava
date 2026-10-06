@@ -10,6 +10,7 @@ import (
 	"github.com/df-mc/dragonfly/server/item/enchantment"
 	"github.com/df-mc/dragonfly/server/item/potion"
 	jitem "github.com/ezchr/go-mcjava/item"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 )
 
@@ -152,5 +153,39 @@ func TestCreativeKeepsValues(t *testing.T) {
 	// Taken: a second one is not another move.
 	if got, src, ok := st.creativeStack(&js, 21); !ok || src != creativeNew || got.CustomName() != "Kit" || len(got.Values()) != 0 {
 		t.Errorf("converted: %v (from %d)", got, src)
+	}
+}
+
+// What vanilla 26.2 sent for the same /give commands (tools/capture/items-vanilla262).
+var vanilla262Stacks = []string{
+	"40010000", "01c40701000d012105", "01c407010004", "01c40701000608000548656c6c6f",
+	"01c40701000b020800054c696e65310800054c696e6532", "01fa0901002a012103", "01d60701002c00ff0000",
+	"01fe080100330119000000", "05ab0a010033011c000000",
+}
+
+// A 26.2 client gets the bytes vanilla 26.2 sends, and the stacks it sends back (creative) convert
+// to the Dragonfly stacks they came from.
+func TestJavaStack262(t *testing.T) {
+	p := jitem.For(version.V776)
+	for i, v := range vanillaStacks {
+		var js jitem.Stack
+		javaStack(v.ds, &js)
+		var w wire.Writer
+		js.EncodeFor(&w, p)
+		if got := hex.EncodeToString(w.B); got != vanilla262Stacks[i] {
+			t.Errorf("%s for 26.2:\n got %s\nwant %s", v.give, got, vanilla262Stacks[i])
+		}
+		w.Reset()
+		js.EncodeUntrustedFor(&w, p)
+		var back jitem.Stack
+		r := wire.NewReader(w.B)
+		back.DecodeUntrustedFor(r, p)
+		if r.Err != nil {
+			t.Fatalf("%s: %v", v.give, r.Err)
+		}
+		ds, ok := dragonflyStack(&back)
+		if !ok || !ds.Equal(v.ds) || ds.Count() != v.ds.Count() {
+			t.Errorf("%s: 26.2 creative round trip gave %v", v.give, ds)
+		}
 	}
 }

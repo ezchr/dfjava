@@ -43,7 +43,7 @@ func (v *view) computeResult() item.Stack {
 		}
 		v.craft = craftMatch{}
 	case menuAnvil:
-		res, cost, n := anvilResult(v.slots[0], v.slots[1], m.name, v.creative)
+		res, cost, n := anvilResult(v.slots[0], v.slots[1], m.name, v.creative, v.st.proto)
 		m.cost, m.repairN = cost, n
 		return res
 	case menuGrindstone:
@@ -53,7 +53,7 @@ func (v *view) computeResult() item.Stack {
 		if name := itemName(in); name != m.selItem {
 			m.selItem, m.sel = name, -1 // vanilla forgets the selection when the input changes
 		}
-		list := stonecutterFor(in)
+		list := stonecutterFor(in, v.st.proto)
 		if m.sel >= 0 && m.sel < len(list) {
 			return list[m.sel].out
 		}
@@ -208,7 +208,7 @@ func (s *Session) menuButton(tx *world.Tx, c session.Controllable, window int32,
 		s.enchant(tx, c, m, button)
 	case menuStonecutter:
 		v := st.newView(tx, c, m)
-		if button >= 0 && button < len(stonecutterFor(v.slots[0])) {
+		if button >= 0 && button < len(stonecutterFor(v.slots[0], st.proto)) {
 			m.sel = button
 		}
 	default:
@@ -243,8 +243,9 @@ func (s *Session) renameItem(tx *world.Tx, c session.Controllable, name string) 
 }
 
 // anvilResult is the anvil's result, its level cost and how many materials a repair uses
-// (handler_anvil.go's handleCraftRecipeOptional, computed up front).
-func anvilResult(input, material item.Stack, name *string, creative bool) (item.Stack, int, int) {
+// (handler_anvil.go's handleCraftRecipeOptional, computed up front). p is the client's protocol (its
+// item names).
+func anvilResult(input, material item.Stack, name *string, creative bool, p *jitem.Proto) (item.Stack, int, int) {
 	if input.Empty() {
 		return item.Stack{}, 0, 0
 	}
@@ -284,7 +285,7 @@ func anvilResult(input, material item.Stack, name *string, creative bool) (item.
 		// Vanilla: a blank name or the item's own name removes a custom name; anything else names it.
 		current := text.Strip(input.CustomName())
 		switch want := *name; {
-		case strings.TrimSpace(want) == "" || (current == "" && want == defaultItemName(input)):
+		case strings.TrimSpace(want) == "" || (current == "" && want == defaultItemName(input, p)):
 			if input.CustomName() != "" {
 				renameCost = 1
 				result = result.WithCustomName("")
@@ -316,9 +317,10 @@ func anvilResult(input, material item.Stack, name *string, creative bool) (item.
 }
 
 // defaultItemName is the English name the client puts in the anvil's text field for an item
-// without a custom name ("Diamond Sword" for minecraft:diamond_sword).
-func defaultItemName(it item.Stack) string {
-	name := strings.TrimPrefix(jitem.Name(javamap.Item(it.Item())), "minecraft:")
+// without a custom name ("Diamond Sword" for minecraft:diamond_sword): the name of the item the client
+// of protocol p sees.
+func defaultItemName(it item.Stack, p *jitem.Proto) string {
+	name := strings.TrimPrefix(p.ItemName(javamap.Item(it.Item())), "minecraft:")
 	words := strings.Split(name, "_")
 	for i, w := range words {
 		if w == "" {
@@ -590,20 +592,32 @@ func containsID(ids []int32, id int32) bool {
 	return false
 }
 
-// stonecutterFor lists the stonecutter recipes for an input, in the client's order (the index is
-// the button the client sends).
-func stonecutterFor(in item.Stack) []stoneRecipe {
+// stonecutterFor lists the stonecutter recipes for an input, in the order of the list the client of
+// protocol p has (the index is the button it sends): a client of an older protocol matches the
+// recipes by its own item ids, which several newest items may share.
+func stonecutterFor(in item.Stack, p *jitem.Proto) []stoneRecipe {
 	if in.Empty() {
 		return nil
 	}
 	id := javamap.Item(in.Item())
 	var out []stoneRecipe
 	for _, r := range stonecutterRecipes() {
-		if containsID(r.in, id) {
+		if p == nil && containsID(r.in, id) || p != nil && containsMapped(r.in, id, p) {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// containsMapped reports whether ids has an item that p's version sees as the item it sees for id.
+func containsMapped(ids []int32, id int32, p *jitem.Proto) bool {
+	o := p.Item(id)
+	for _, x := range ids {
+		if p.Item(x) == o {
+			return true
+		}
+	}
+	return false
 }
 
 // Beacon effects: Bedrock effect id (Dragonfly) <-> Java mob_effect, and the pyramid level each needs.
@@ -617,8 +631,9 @@ var beaconEffects = []struct {
 	{5, "minecraft:strength", 3}, {10, "minecraft:regeneration", 4},
 }
 
-// beaconEffectData is the beacon window's data value of an effect: Java id + 1, 0 for none.
-func beaconEffectData(t effect.LastingType) int32 {
+// beaconEffectData is the beacon window's data value of an effect: its id in the client's protocol p
+// + 1, 0 for none.
+func beaconEffectData(t effect.LastingType, p *jitem.Proto) int32 {
 	if t == nil {
 		return 0
 	}
@@ -628,7 +643,7 @@ func beaconEffectData(t effect.LastingType) int32 {
 	}
 	for _, e := range beaconEffects {
 		if e.bedrock == id {
-			return v777.BuiltinID("minecraft:mob_effect", e.java) + 1
+			return p.Effect(v777.BuiltinID("minecraft:mob_effect", e.java)) + 1
 		}
 	}
 	return 0

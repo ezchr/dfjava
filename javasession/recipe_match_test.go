@@ -11,6 +11,10 @@ import (
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/item/enchantment"
 	"github.com/df-mc/dragonfly/server/world"
+	jitem "github.com/ezchr/go-mcjava/item"
+	v776 "github.com/ezchr/go-mcjava/v776"
+	"github.com/ezchr/go-mcjava/version"
+	"github.com/ezchr/go-mcjava/wire"
 )
 
 // Dragonfly registers its recipes when a server is made.
@@ -87,7 +91,7 @@ func TestCraftMatch(t *testing.T) {
 
 func TestStonecutterList(t *testing.T) {
 	testServer()
-	list := stonecutterFor(stack(block.Stone{}, 1))
+	list := stonecutterFor(stack(block.Stone{}, 1), nil)
 	if len(list) == 0 {
 		t.Fatal("no stonecutter recipes for stone")
 	}
@@ -102,16 +106,16 @@ func TestStonecutterList(t *testing.T) {
 func TestAnvilAndGrindstone(t *testing.T) {
 	testServer()
 	pick := stack(item.Pickaxe{Tier: item.ToolTierIron}, 1).Damage(200)
-	res, cost, n := anvilResult(pick, stack(item.IronIngot{}, 8), nil, false)
+	res, cost, n := anvilResult(pick, stack(item.IronIngot{}, 8), nil, false, nil)
 	if res.Empty() || n == 0 || cost == 0 || res.Durability() <= pick.Durability() {
 		t.Errorf("repair with ingots: %v cost %d uses %d", res, cost, n)
 	}
 	name := "Iron Pickaxe"
-	if res, _, _ := anvilResult(pick, item.Stack{}, &name, false); !res.Empty() {
+	if res, _, _ := anvilResult(pick, item.Stack{}, &name, false, nil); !res.Empty() {
 		t.Errorf("the default name is not a rename: %v", res)
 	}
 	name = "Digger"
-	if res, cost, _ := anvilResult(pick, item.Stack{}, &name, false); res.CustomName() != "Digger" || cost != 1 {
+	if res, cost, _ := anvilResult(pick, item.Stack{}, &name, false, nil); res.CustomName() != "Digger" || cost != 1 {
 		t.Errorf("rename: %v cost %d", res, cost)
 	}
 	if g := grindResult(pick, item.Stack{}); !g.Empty() {
@@ -119,5 +123,52 @@ func TestAnvilAndGrindstone(t *testing.T) {
 	}
 	if g := grindResult(pick.WithEnchantments(item.NewEnchantment(enchantment.Efficiency, 2)), item.Stack{}); g.Empty() || len(g.Enchantments()) != 0 {
 		t.Errorf("grindstone gave %v for one enchanted pickaxe", g)
+	}
+}
+
+// update_recipes for a 26.2 client: every item id is one 26.2 has, the stonecutter list keeps every
+// recipe in the same order, and the layout reads to the end.
+func TestRecipes262(t *testing.T) {
+	testServer()
+	p := jitem.For(version.V776)
+	var w wire.Writer
+	appendRecipes(&w, p)
+	maxItem := int32(len(v776.Builtin["minecraft:item"]))
+	r := wire.NewReader(w.B)
+	readIDs := func(n int32) {
+		for range n {
+			if id := r.VarInt(); id < 0 || id >= maxItem {
+				t.Fatalf("item id %d is not a 26.2 item", id)
+			}
+		}
+	}
+	sets := r.VarInt()
+	for range sets {
+		r.String(256)
+		readIDs(r.VarInt())
+	}
+	n := r.VarInt()
+	if int(n) != len(stonecutterRecipes()) {
+		t.Fatalf("%d stonecutter recipes for 26.2, %d for 26.3", n, len(stonecutterRecipes()))
+	}
+	for range n {
+		readIDs(r.VarInt() - 1)
+		if d := r.VarInt(); d != slotDisplayItem {
+			t.Fatalf("slot display %d", d)
+		}
+		readIDs(1)
+	}
+	if r.Err != nil || r.Len() != 0 {
+		t.Fatalf("26.2 update_recipes: %v, %d bytes left", r.Err, r.Len())
+	}
+	// The newest version's packet is unchanged by the version code.
+	w.Reset()
+	appendRecipes(&w, nil)
+	if string(w.B) != string(recipesPacket()) {
+		t.Error("26.3 update_recipes differs from the cached one")
+	}
+	// A 26.2 client's stonecutter list for stone is the 26.3 one.
+	if a, b := stonecutterFor(stack(block.Stone{}, 1), p), stonecutterFor(stack(block.Stone{}, 1), nil); len(a) != len(b) {
+		t.Errorf("stone: %d stonecutter recipes for 26.2, %d for 26.3", len(a), len(b))
 	}
 }

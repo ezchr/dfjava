@@ -44,6 +44,15 @@ const (
 type itemState struct {
 	s *Session
 
+	// The client's item ids when its protocol is older than the newest (nil: the newest, nothing to
+	// remap): stacks, menu types and recipe data are written with them, stacks the client sends are
+	// read with them. Set once in newItemState.
+	proto *jitem.Proto
+	menus []int32 // minecraft:menu remap table (nil: unchanged)
+	// brewingData is how many data slots the brewing stand window has: 4 since 26.3 (brew time,
+	// fuel, total brew time, total fuel), 2 before.
+	brewingData int
+
 	mu       sync.Mutex // guards the inventory pointers and slot funcs
 	inv      *inventory.Inventory
 	offHand  *inventory.Inventory
@@ -150,7 +159,14 @@ func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, o
 
 // newItemState makes the inventory state with its slot funcs (allocated once, not per transaction).
 func newItemState(s *Session) *itemState {
-	st := &itemState{s: s, player: menu{kind: menuPlayer, size: 5}, released: make(chan struct{})}
+	st := &itemState{s: s, player: menu{kind: menuPlayer, size: 5}, released: make(chan struct{}), brewingData: 4}
+	if s.ver != nil && !s.ver.Native() {
+		st.proto = jitem.For(s.ver)
+		st.menus = s.ver.BuiltinTable("minecraft:menu")
+		if s.ver.Protocol < 777 {
+			st.brewingData = 2
+		}
+	}
 	st.fnInv = func(slot int, _, after item.Stack) {
 		if hs := st.heldSlot.Load(); hs != nil && slot == int(*hs) {
 			st.broadcast(world.Viewer.ViewEntityItems)
@@ -259,7 +275,7 @@ func (s *Session) writeStack(w *wire.Writer, ds item.Stack) {
 	st := s.items()
 	st.convMu.Lock()
 	javaStack(ds, &st.conv)
-	st.conv.Encode(w)
+	st.conv.EncodeFor(w, st.proto)
 	st.convMu.Unlock()
 }
 
@@ -363,7 +379,7 @@ func (s *Session) ViewEntityArmour(e world.Entity) {
 
 // ViewItemCooldown shows a cooldown on an item (the Java cooldown group is the item's id).
 func (s *Session) ViewItemCooldown(it world.Item, d time.Duration) {
-	name := jitem.Name(javamap.Item(it))
+	name := s.items().proto.ItemName(javamap.Item(it))
 	if name == "" {
 		return
 	}
