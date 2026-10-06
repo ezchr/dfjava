@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/df-mc/dragonfly/server/player"
+	"github.com/df-mc/dragonfly/server/world"
 	jserver "github.com/ezchr/go-mcjava/server"
 )
 
@@ -133,4 +135,58 @@ func fetchGeyserSkin(xuid string) []jserver.Property {
 		return nil
 	}
 	return []jserver.Property{{Name: "textures", Value: body.Value, Signature: body.Signature}}
+}
+
+// deferForSkin holds back showing a Bedrock player whose skin lookup has not finished, for at
+// most skinWaitForTab: a Java client keeps the skin it first draws a player with, so a player
+// shown before the lookup stays default-skinned until they come into view again. It reports
+// whether the spawn was deferred; the player is then shown (with everything a spawn sends) once
+// the lookup is done, unless they left view in the meantime (HideEntity calls it off).
+func (s *Session) deferForSkin(p *player.Player) bool {
+	if isJavaPlayer(p.UUID()) || p.XUID() == "" {
+		return false
+	}
+	if _, settled := bedrockSkinProps(p.XUID()); settled {
+		return false
+	}
+	h, xuid := p.H(), p.XUID()
+	s.entMu.Lock()
+	if s.deferred == nil {
+		s.deferred = map[*world.EntityHandle]struct{}{}
+	}
+	if _, waiting := s.deferred[h]; waiting {
+		s.entMu.Unlock()
+		return true
+	}
+	s.deferred[h] = struct{}{}
+	s.entMu.Unlock()
+	go func() {
+		deadline := time.Now().Add(skinWaitForTab)
+		for time.Now().Before(deadline) {
+			if _, settled := bedrockSkinProps(xuid); settled {
+				break
+			}
+			select {
+			case <-s.closed:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		_, _ = world.CallRef(context.Background(), world.NewEntityRef[world.Entity](h), func(tx *world.Tx, e world.Entity) (struct{}, error) {
+			s.entMu.Lock()
+			_, still := s.deferred[h]
+			delete(s.deferred, h)
+			s.entMu.Unlock()
+			if !still {
+				return struct{}{}, nil // left view meanwhile
+			}
+			// What the world sends a viewer for an entity coming into view (world.showEntity).
+			s.ViewEntity(e)
+			s.ViewEntityItems(e)
+			s.ViewEntityArmour(e)
+			s.ViewEntityState(e)
+			return struct{}{}, nil
+		})
+	}()
+	return true
 }

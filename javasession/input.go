@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/entity"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mcjava/v777"
@@ -169,15 +170,26 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 	case v777.ServerboundPlayInteract:
 		target := r.VarInt()
 		hand := r.VarInt()
-		r.LpVec3()
-		r.Bool() // sneaking
+		cx, cy, cz := r.LpVec3() // where on the entity, relative to its position
+		r.Bool()                 // sneaking
 		if r.Err != nil {
 			return true, r.Err
 		}
 		if hand == 0 {
+			clicked := mgl64.Vec3{cx, cy, cz}
 			s.do(func(tx *world.Tx, c session.Controllable) {
-				if e, ok := s.entityByID(tx, target); ok {
-					c.UseItemOnEntity(e)
+				e, ok := s.entityByID(tx, target)
+				if !ok {
+					return
+				}
+				// As Dragonfly's Bedrock interact handler: using a rideable (a cushion, a boat)
+				// also gets on it, in the seat nearest the click.
+				if c.UseItemOnEntity(e) {
+					if rideable, ok := e.(entity.Rideable); ok {
+						if seat, ok := rideable.NextFreeSeatIndex(e.Position().Add(clicked)); ok {
+							c.MountEntity(tx, rideable, seat)
+						}
+					}
 				}
 			})
 		}
@@ -188,6 +200,10 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		}
 		sneak, jump := flags&inputShift != 0, flags&inputJump != 0
 		s.do(func(tx *world.Tx, c session.Controllable) {
+			if sneak && !s.input.sneaking && c.RidingEntityHandle() != nil {
+				// Java gets off a seat with the sneak key (Bedrock sends a leave-vehicle interact).
+				c.DismountEntity(tx)
+			}
 			if sneak != s.input.sneaking {
 				if sneak {
 					c.StartSneaking()

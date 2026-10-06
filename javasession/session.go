@@ -60,6 +60,7 @@ type Session struct {
 	entMu        sync.Mutex
 	entityIDs    map[*world.EntityHandle]int32
 	riders       map[*world.EntityHandle][]*world.EntityHandle // vehicle -> riders (riding.go)
+	deferred     map[*world.EntityHandle]struct{}              // Bedrock players waiting for their skin (deferForSkin)
 	tracks       map[int32]*track
 	nextEntityID int32
 

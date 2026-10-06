@@ -71,6 +71,9 @@ func (s *Session) ViewEntity(e world.Entity) {
 		s.viewOtherEntity(e)
 		return
 	}
+	if s.deferForSkin(p) {
+		return
+	}
 	id := s.addEntityID(e)
 	u := p.UUID()
 
@@ -101,6 +104,9 @@ func (s *Session) HideEntity(e world.Entity) {
 	if e.H() == s.ent {
 		return
 	}
+	s.entMu.Lock()
+	delete(s.deferred, e.H()) // a deferred spawn that has not happened yet is called off
+	s.entMu.Unlock()
 	id, ok := s.removeEntityID(e)
 	if !ok {
 		return
