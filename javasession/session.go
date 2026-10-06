@@ -45,10 +45,14 @@ type Session struct {
 	vitalsMu sync.Mutex
 	vitals   vitals
 
-	input      inputState
-	lastCentre world.ChunkPos
-	centreSent bool
-	closeOnce  sync.Once
+	input inputState
+
+	timeMu      sync.Mutex
+	time        int
+	timeStopped bool
+	lastCentre  world.ChunkPos
+	centreSent  bool
+	closeOnce   sync.Once
 
 	// Chunk sending: the client says how many chunks per tick it can take (in thousandths);
 	// one batch waits for its acknowledgement at a time.

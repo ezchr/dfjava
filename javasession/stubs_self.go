@@ -56,8 +56,5 @@ func (*Session) ViewParticle(_ mgl64.Vec3, _ world.Particle)                 {}
 func (*Session) ViewSkin(_ world.Entity)                                     {}
 func (*Session) ViewSleepingPlayers(_ int, _ int)                            {}
 func (*Session) ViewSound(_ mgl64.Vec3, _ world.Sound)                       {}
-func (*Session) ViewTime(_ int)                                              {}
-func (*Session) ViewTimeCycle(_ bool)                                        {}
 func (*Session) ViewVisibility(_ world.Entity, _ world.VisibilityLevel)      {}
-func (*Session) ViewWeather(_ bool, _ bool)                                  {}
 func (*Session) VisibleDebugShapes() []debug.Shape                           { return nil }
