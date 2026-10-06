@@ -21,6 +21,7 @@ func main() {
 	bedrockAddr := flag.String("bedrock", "127.0.0.1:19160", "Bedrock listen address")
 	folder := flag.String("world", "dfjtest-world", "world folder")
 	radius := flag.Int("radius", 6, "chunk radius")
+	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -37,6 +38,9 @@ func main() {
 		return generator.NewFlat(biome.Plains{}, []world.Block{block.Grass{}, block.Dirt{}, block.Dirt{}, block.Bedrock{}})
 	}
 	srv := conf.New()
+	if *survival {
+		srv.World().SetDefaultGameMode(world.GameModeSurvival)
+	}
 	srv.CloseOnProgramEnd()
 	srv.Listen()
 

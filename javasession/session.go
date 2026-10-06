@@ -38,10 +38,16 @@ type Session struct {
 	nextEntityID int32
 
 	chunkRadius int32
+	dim         string // the client's current Java dimension
 	loader      *world.Loader
-	lastCentre  world.ChunkPos
-	centreSent  bool
-	closeOnce   sync.Once
+
+	vitalsMu sync.Mutex
+	vitals   vitals
+
+	input      inputState
+	lastCentre world.ChunkPos
+	centreSent bool
+	closeOnce  sync.Once
 
 	// Chunk sending: the client says how many chunks per tick it can take (in thousandths);
 	// one batch waits for its acknowledgement at a time.
@@ -81,6 +87,7 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 		wake:        make(chan struct{}, 1),
 		closed:      make(chan struct{}),
 		entityIDs:   map[*world.EntityHandle]int32{},
+		vitals:      vitals{health: 20, food: 20, saturation: 5},
 	}
 	s.chunkRate.Store(9000) // vanilla's starting rate: 9 chunks per tick
 	s.writers.New = func() any { return &wire.Writer{B: make([]byte, 0, 256)} }
@@ -200,6 +207,10 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 // Spawn starts the session once the player entity is in the world.
 func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.ent = c.H()
+	s.SendHealth(c.Health(), c.MaxHealth(), c.Absorption())
+	s.SendFood(c.Food(), 0, 0)
+	s.SendExperience(c.ExperienceLevel(), c.ExperienceProgress())
+	s.SendAbilities(c)
 	pos := c.Position()
 	s.loader = world.NewLoader(int(s.chunkRadius), tx.World(), s)
 	s.loader.Move(tx, pos)
@@ -248,6 +259,7 @@ func (s *Session) tickLoop() {
 				s.loader.Move(tx, pos)
 				s.sendCentre(pos)
 				s.sendChunkBatch(tx)
+				s.continueBreaking(c)
 			})
 			if err != nil {
 				if !stopped(err) {

@@ -64,7 +64,7 @@ func join(conf Config, jp *jserver.Player) {
 		s.Disconnect("You are already logged in.")
 		return
 	}
-	s.log.Info("joined", "addr", s.Addr())
+	s.log.Info("joined", "addr", s.Addr(), "gamemode", gameModeID(pc.GameMode), "pos", pc.Position)
 }
 
 // SetCloseHandler ...
@@ -97,6 +97,7 @@ func dimensionKey(d world.Dimension) string {
 // sendLogin sends the play login, spawn point and position: what vanilla sends before chunks.
 func (s *Session) sendLogin(pc player.Config, w *world.World) {
 	dim := dimensionKey(w.Dimension())
+	s.dim = dim
 	p := s.packet()
 	p.Int32(selfEntityID)
 	p.Bool(false) // hardcore

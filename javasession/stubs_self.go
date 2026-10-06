@@ -6,8 +6,6 @@ package javasession
 import (
 	"net"
 
-	"github.com/df-mc/dragonfly/server/session"
-
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/entity/effect"
 	"github.com/df-mc/dragonfly/server/player/debug"
@@ -34,18 +32,11 @@ func (*Session) PlaySound(_ world.Sound, _ mgl64.Vec3)                       {}
 func (*Session) RemoveAllDebugShapes()                                       {}
 func (*Session) RemoveDebugShape(_ debug.Shape)                              {}
 func (*Session) RemoveViewLayer(_ world.Entity)                              {}
-func (*Session) SendAbilities(_ session.Controllable)                        {}
 func (*Session) SendDebugShapes(_ world.Dimension)                           {}
 func (*Session) SendEffect(_ effect.Effect)                                  {}
 func (*Session) SendEffectRemoval(_ effect.Type)                             {}
-func (*Session) SendExperience(_ int, _ float64)                             {}
-func (*Session) SendFood(_ int, _ float64, _ float64)                        {}
-func (*Session) SendGameMode(_ session.Controllable)                         {}
-func (*Session) SendHealth(_ float64, _ float64, _ float64)                  {}
 func (*Session) SendHudUpdates()                                             {}
 func (*Session) SendInputLocks()                                             {}
-func (*Session) SendPlayerSpawn(_ mgl64.Vec3)                                {}
-func (*Session) SendRespawn(_ mgl64.Vec3, _ session.Controllable)            {}
 func (*Session) SendSpeed(_ float64)                                         {}
 func (*Session) SetHandle(_ *world.EntityHandle, _ skin.Skin)                {}
 func (*Session) ShowHudElement(_ hud.Element)                                {}
@@ -59,7 +50,6 @@ func (*Session) ViewEntityAnimation(_ world.Entity, _ world.EntityAnimation) {}
 func (*Session) ViewEntityDismount(_ world.Entity, _ world.Entity)           {}
 func (*Session) ViewEntityGameMode(_ world.Entity)                           {}
 func (*Session) ViewEntityMount(_ world.Entity, _ world.Entity, _ bool)      {}
-func (*Session) ViewEntityState(_ world.Entity)                              {}
 func (*Session) ViewEntityWake(_ world.Entity)                               {}
 func (*Session) ViewLayer() *world.ViewLayer                                 { return nil }
 func (*Session) ViewParticle(_ mgl64.Vec3, _ world.Particle)                 {}
@@ -70,5 +60,4 @@ func (*Session) ViewTime(_ int)                                              {}
 func (*Session) ViewTimeCycle(_ bool)                                        {}
 func (*Session) ViewVisibility(_ world.Entity, _ world.VisibilityLevel)      {}
 func (*Session) ViewWeather(_ bool, _ bool)                                  {}
-func (*Session) ViewWorldSpawn(_ cube.Pos)                                   {}
 func (*Session) VisibleDebugShapes() []debug.Shape                           { return nil }

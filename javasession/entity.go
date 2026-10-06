@@ -188,21 +188,31 @@ func (s *Session) ViewEntityAction(e world.Entity, a world.EntityAction) {
 		if id == selfEntityID {
 			return // the client already swung
 		}
+		// 26.3 swings with swing_animation (animate no longer has a swing action).
 		w := s.packet()
 		w.VarInt(id)
-		w.Byte(0) // swing main arm
-		s.queue(v777.ClientboundPlayAnimate, w)
+		w.VarInt(0) // main hand
+		w.VarInt(1) // SwingAnimationType.WHACK
+		w.VarInt(6) // duration in ticks (SwingAnimation.DEFAULT)
+		s.queue(v777.ClientboundPlaySwingAnimation, w)
 	case entity.HurtAction:
 		w := s.packet()
 		w.VarInt(id)
 		w.Float32(float32(e.Rotation().Yaw()))
 		s.queue(v777.ClientboundPlayHurtAnimation, w)
 	case entity.CriticalHitAction:
-		w := s.packet()
-		w.VarInt(id)
-		w.Byte(4)
-		s.queue(v777.ClientboundPlayAnimate, w)
+		s.animate(id, 1) // CRITICAL_HIT
+	case entity.EnchantedHitAction:
+		s.animate(id, 2) // MAGIC_CRITICAL_HIT
 	}
+}
+
+// animate sends an animate packet (26.3 actions: 0 wake up, 1 critical hit, 2 magic critical hit).
+func (s *Session) animate(id int32, action byte) {
+	w := s.packet()
+	w.VarInt(id)
+	w.Byte(action)
+	s.queue(v777.ClientboundPlayAnimate, w)
 }
 
 // ViewBlockUpdate sends a changed block.
