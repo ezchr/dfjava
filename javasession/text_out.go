@@ -8,8 +8,8 @@ import (
 
 	"github.com/df-mc/dragonfly/server/cmd"
 	"github.com/df-mc/dragonfly/server/player/chat"
-	"github.com/ezchr/go-mc/java/text"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	"github.com/ezchr/go-mcjava/text"
+	v777 "github.com/ezchr/go-mcjava/v777"
 	"golang.org/x/text/language"
 )
 

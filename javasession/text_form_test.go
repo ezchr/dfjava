@@ -6,7 +6,7 @@ import (
 	"github.com/df-mc/dragonfly/server/cmd"
 	"github.com/df-mc/dragonfly/server/player/form"
 	"github.com/df-mc/dragonfly/server/world"
-	"github.com/ezchr/go-mc/java/wire"
+	"github.com/ezchr/go-mcjava/wire"
 )
 
 type testCustom struct {

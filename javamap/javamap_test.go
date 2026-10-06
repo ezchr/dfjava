@@ -16,7 +16,7 @@ import (
 	"github.com/df-mc/dragonfly/server/item/potion"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/biome"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	v777 "github.com/ezchr/go-mcjava/v777"
 )
 
 func TestMain(m *testing.M) {

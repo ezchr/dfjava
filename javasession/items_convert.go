@@ -8,8 +8,8 @@ import (
 	"github.com/df-mc/dragonfly/server/item/potion"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/ezchr/dfjava/javamap"
-	jitem "github.com/ezchr/go-mc/java/item"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	jitem "github.com/ezchr/go-mcjava/item"
+	v777 "github.com/ezchr/go-mcjava/v777"
 )
 
 // Java item ids the conversion needs.

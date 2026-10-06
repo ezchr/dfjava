@@ -10,9 +10,9 @@ import (
 	"github.com/df-mc/dragonfly/server/player/form"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
-	"github.com/ezchr/go-mc/java/text"
-	v777 "github.com/ezchr/go-mc/java/v777"
-	"github.com/ezchr/go-mc/java/wire"
+	"github.com/ezchr/go-mcjava/text"
+	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/wire"
 )
 
 // Forms are shown as Java dialogs (show_dialog, 1.21.6+), built from the form's Bedrock JSON so

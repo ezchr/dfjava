@@ -7,7 +7,7 @@ import (
 	"github.com/df-mc/dragonfly/server/entity"
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	v777 "github.com/ezchr/go-mcjava/v777"
 	"github.com/go-gl/mathgl/mgl64"
 )
 

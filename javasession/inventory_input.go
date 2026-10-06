@@ -8,9 +8,9 @@ import (
 	"github.com/df-mc/dragonfly/server/item/inventory"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
-	jitem "github.com/ezchr/go-mc/java/item"
-	v777 "github.com/ezchr/go-mc/java/v777"
-	"github.com/ezchr/go-mc/java/wire"
+	jitem "github.com/ezchr/go-mcjava/item"
+	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/wire"
 )
 
 // container_click modes (ContainerInput).

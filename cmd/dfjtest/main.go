@@ -20,7 +20,7 @@ import (
 	"github.com/df-mc/dragonfly/server/world/biome"
 	"github.com/df-mc/dragonfly/server/world/generator"
 	"github.com/ezchr/dfjava/javasession"
-	jserver "github.com/ezchr/go-mc/java/server"
+	jserver "github.com/ezchr/go-mcjava/server"
 	"github.com/go-gl/mathgl/mgl64"
 )
 

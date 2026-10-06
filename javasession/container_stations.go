@@ -14,9 +14,9 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/sound"
 	"github.com/ezchr/dfjava/javamap"
-	jitem "github.com/ezchr/go-mc/java/item"
-	"github.com/ezchr/go-mc/java/text"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	jitem "github.com/ezchr/go-mcjava/item"
+	"github.com/ezchr/go-mcjava/text"
+	v777 "github.com/ezchr/go-mcjava/v777"
 )
 
 // Results of the windows that make something: the crafting grids and the work stations. Java

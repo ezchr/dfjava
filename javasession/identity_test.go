@@ -3,7 +3,7 @@ package javasession
 import (
 	"testing"
 
-	jserver "github.com/ezchr/go-mc/java/server"
+	jserver "github.com/ezchr/go-mcjava/server"
 )
 
 // The XUID for a name must match ViaBedrock's (Fnv1.fnv1_64 then Math.abs), and the UUID the

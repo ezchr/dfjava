@@ -6,8 +6,8 @@ import (
 
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/player"
-	v777 "github.com/ezchr/go-mc/java/v777"
-	"github.com/ezchr/go-mc/java/wire"
+	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/wire"
 	"github.com/google/uuid"
 )
 

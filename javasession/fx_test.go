@@ -14,8 +14,8 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/particle"
 	"github.com/df-mc/dragonfly/server/world/sound"
-	v777 "github.com/ezchr/go-mc/java/v777"
-	"github.com/ezchr/go-mc/java/wire"
+	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 )
 

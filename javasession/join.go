@@ -9,9 +9,9 @@ import (
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
-	jserver "github.com/ezchr/go-mc/java/server"
-	v777 "github.com/ezchr/go-mc/java/v777"
-	"github.com/ezchr/go-mc/java/wire"
+	jserver "github.com/ezchr/go-mcjava/server"
+	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/wire"
 	"github.com/google/uuid"
 	"golang.org/x/text/language"
 )

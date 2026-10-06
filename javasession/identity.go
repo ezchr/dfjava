@@ -6,7 +6,7 @@ import (
 	"math"
 	"strconv"
 
-	jserver "github.com/ezchr/go-mc/java/server"
+	jserver "github.com/ezchr/go-mcjava/server"
 	"github.com/google/uuid"
 )
 

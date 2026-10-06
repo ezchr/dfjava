@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/df-mc/dragonfly/server/player/skin"
-	jserver "github.com/ezchr/go-mc/java/server"
+	jserver "github.com/ezchr/go-mcjava/server"
 	"github.com/google/uuid"
 )
 

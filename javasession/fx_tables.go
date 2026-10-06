@@ -2,7 +2,7 @@ package javasession
 
 import (
 	"github.com/df-mc/dragonfly/server/world"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	v777 "github.com/ezchr/go-mcjava/v777"
 )
 
 // soundSource is Java's SoundSource (the sound packet's category), by ordinal.

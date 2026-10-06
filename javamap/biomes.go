@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/df-mc/dragonfly/server/world"
-	v777 "github.com/ezchr/go-mc/java/v777"
+	v777 "github.com/ezchr/go-mcjava/v777"
 )
 
 // BiomeID returns the Java biome network id (index in the minecraft:worldgen/biome registry sent during

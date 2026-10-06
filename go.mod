@@ -6,11 +6,11 @@ replace github.com/df-mc/dragonfly => ../dragonfly
 
 replace github.com/sandertv/gophertunnel => /root/dragonfly/third_party/gophertunnel
 
-replace github.com/ezchr/go-mc => ../go-mc
+replace github.com/ezchr/go-mcjava => ../go-mcjava
 
 require (
 	github.com/df-mc/dragonfly v0.0.0-00010101000000-000000000000
-	github.com/ezchr/go-mc v0.0.0-00010101000000-000000000000
+	github.com/ezchr/go-mcjava v0.0.0
 	github.com/go-gl/mathgl v1.2.0
 	github.com/google/uuid v1.6.0
 	github.com/sandertv/gophertunnel v1.62.0
