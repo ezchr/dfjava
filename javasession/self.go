@@ -100,6 +100,7 @@ func (s *Session) SendRespawn(pos mgl64.Vec3, c session.Controllable) {
 	w.VarInt(63)
 	w.Byte(0) // keep nothing: the server resends attributes and metadata
 	s.queue(v777.ClientboundPlayRespawn, w)
+	s.resendInventory()
 	rot := c.Rotation()
 	s.teleport(pos[0], pos[1], pos[2], float32(rot.Yaw()), float32(rot.Pitch()))
 	s.SendAbilities(c)

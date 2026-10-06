@@ -77,6 +77,10 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 				s.input.breaking = false
 			case actionReleaseUseItem:
 				c.ReleaseItem()
+			case actionDropAll, actionDropItem:
+				s.dropHeldItem(c, action == actionDropAll)
+			case actionSwapOffhand:
+				s.swapHands(c)
 			}
 		})
 		s.ackBlock(seq)

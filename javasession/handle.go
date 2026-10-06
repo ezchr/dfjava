@@ -53,6 +53,9 @@ func (s *Session) handle(id int32, body []byte) error {
 		if ok, err := s.handleTextPacket(id, body); ok {
 			return err
 		}
+		if ok, err := s.handleInventoryPacket(id, body); ok {
+			return err
+		}
 		if ok, err := s.handleInput(id, body); ok {
 			return err
 		}

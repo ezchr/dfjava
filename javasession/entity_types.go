@@ -3,6 +3,7 @@ package javasession
 import (
 	"github.com/df-mc/dragonfly/server/entity"
 	"github.com/df-mc/dragonfly/server/world"
+	jitem "github.com/ezchr/go-mc/java/item"
 	v777 "github.com/ezchr/go-mc/java/v777"
 	"github.com/go-gl/mathgl/mgl64"
 )
@@ -99,6 +100,23 @@ func (s *Session) viewOtherEntity(e world.Entity) {
 	s.viewEntityMeta(e, id)
 }
 
-// viewEntityMeta sends entity data a freshly spawned entity needs (item entities show their item
-// once item stacks are encodable).
-func (s *Session) viewEntityMeta(e world.Entity, id int32) {}
+// viewEntityMeta sends entity data a freshly spawned entity needs: an item entity's item.
+func (s *Session) viewEntityMeta(e world.Entity, id int32) {
+	ent, ok := e.(*entity.Ent)
+	if !ok {
+		return
+	}
+	ib, ok := ent.Behaviour().(*entity.ItemBehaviour)
+	if !ok {
+		return
+	}
+	var js jitem.Stack
+	javaStack(ib.Item(), &js)
+	w := s.packet()
+	w.VarInt(id)
+	w.Byte(8)   // ItemEntity.DATA_ITEM
+	w.VarInt(7) // ITEM_STACK serializer
+	js.Encode(w)
+	w.Byte(0xff)
+	s.queue(v777.ClientboundPlaySetEntityData, w)
+}
