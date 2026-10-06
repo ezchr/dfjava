@@ -1,0 +1,119 @@
+package javasession
+
+import (
+	"log/slog"
+	"os"
+	"sync"
+	"testing"
+
+	"github.com/df-mc/dragonfly/server"
+	"github.com/df-mc/dragonfly/server/block"
+	"github.com/df-mc/dragonfly/server/item"
+	"github.com/df-mc/dragonfly/server/world"
+)
+
+// Dragonfly registers its recipes when a server is made.
+var testServer = sync.OnceFunc(func() {
+	dir, _ := os.MkdirTemp("", "dfj-recipes")
+	uc := server.DefaultConfig()
+	uc.World.Folder = dir
+	uc.Players.SaveData = false
+	conf, err := uc.Config(slog.New(slog.DiscardHandler))
+	if err != nil {
+		panic(err)
+	}
+	conf.Listeners = nil
+	conf.New()
+})
+
+func stack(it world.Item, n int) item.Stack { return item.NewStack(it, n) }
+
+func TestCraftMatch(t *testing.T) {
+	testServer()
+	ix := recipes()
+	t.Logf("%d crafting table recipes indexed, %d stonecutter recipes", ix.count, len(stonecutterRecipes()))
+	var (
+		e      item.Stack
+		oak    = stack(block.Planks{Wood: block.OakWood()}, 1)
+		birch  = stack(block.Planks{Wood: block.BirchWood()}, 1)
+		log    = stack(block.Log{Wood: block.OakWood()}, 1)
+		stick  = stack(item.Stick{}, 1)
+		cobble = stack(block.Cobblestone{}, 1)
+		milk   = stack(item.Bucket{Content: item.MilkBucketContent()}, 1)
+		sugar  = stack(item.Sugar{}, 1)
+		egg    = stack(item.Egg{}, 1)
+		wheat  = stack(item.Wheat{}, 1)
+		iron   = stack(item.IronIngot{}, 1)
+		flint  = stack(item.Flint{}, 1)
+	)
+	cases := []struct {
+		name  string
+		width int
+		grid  []item.Stack
+		want  string // EncodeItem name, "" for no result
+		count int
+	}{
+		{"planks 2x2", 2, []item.Stack{e, e, e, log}, "minecraft:oak_planks", 4},
+		{"sticks", 2, []item.Stack{oak, e, oak, e}, "minecraft:stick", 4},
+		{"sticks mixed planks (tag)", 3, []item.Stack{e, e, e, e, oak, e, e, birch, e}, "minecraft:stick", 4},
+		{"crafting table", 2, []item.Stack{oak, oak, oak, oak}, "minecraft:crafting_table", 1},
+		{"wooden pickaxe", 3, []item.Stack{oak, oak, oak, e, stick, e, e, stick, e}, "minecraft:wooden_pickaxe", 1},
+		{"upside-down pickaxe is nothing", 3, []item.Stack{e, stick, e, e, stick, e, oak, oak, oak}, "", 0},
+		{"furnace", 3, []item.Stack{cobble, cobble, cobble, cobble, e, cobble, cobble, cobble, cobble}, "minecraft:furnace", 1},
+		{"cake", 3, []item.Stack{milk, milk, milk, sugar, egg, sugar, wheat, wheat, wheat}, "minecraft:cake", 1},
+		{"stairs", 3, []item.Stack{oak, e, e, oak, oak, e, oak, oak, oak}, "minecraft:oak_stairs", 4},
+		{"stairs mirrored", 3, []item.Stack{e, e, oak, e, oak, oak, oak, oak, oak}, "minecraft:oak_stairs", 4},
+		{"bread in the bottom row", 3, []item.Stack{e, e, e, e, e, e, wheat, wheat, wheat}, "minecraft:bread", 1},
+		{"flint and steel (shapeless) anywhere", 3, []item.Stack{e, e, flint, e, e, e, iron, e, e}, "minecraft:flint_and_steel", 1},
+		{"chest from mixed planks", 3, []item.Stack{oak, birch, oak, birch, e, oak, oak, oak, birch}, "minecraft:chest", 1},
+		{"pickaxe does not fit 2x2", 2, []item.Stack{oak, oak, stick, e}, "", 0},
+	}
+	for _, c := range cases {
+		cm, ok := ix.match(c.width, c.grid)
+		got, n := "", 0
+		if ok {
+			got, _ = cm.output.Item().EncodeItem()
+			n = cm.output.Count()
+		}
+		if got != c.want || n != c.count {
+			t.Errorf("%s: got %q x%d, want %q x%d", c.name, got, n, c.want, c.count)
+		}
+	}
+	if r := craftRemainder(milk); itemName(r) != "minecraft:bucket" {
+		t.Errorf("milk bucket remainder %v", r)
+	}
+}
+
+func TestStonecutterList(t *testing.T) {
+	testServer()
+	list := stonecutterFor(stack(block.Stone{}, 1))
+	if len(list) == 0 {
+		t.Fatal("no stonecutter recipes for stone")
+	}
+	for _, r := range list {
+		t.Logf("stone -> %s x%d", itemName(r.out), r.out.Count())
+	}
+	if len(recipesPacket()) < 100 {
+		t.Errorf("update_recipes is %d bytes", len(recipesPacket()))
+	}
+}
+
+func TestAnvilAndGrindstone(t *testing.T) {
+	testServer()
+	pick := stack(item.Pickaxe{Tier: item.ToolTierIron}, 1).Damage(200)
+	res, cost, n := anvilResult(pick, stack(item.IronIngot{}, 8), nil, false)
+	if res.Empty() || n == 0 || cost == 0 || res.Durability() <= pick.Durability() {
+		t.Errorf("repair with ingots: %v cost %d uses %d", res, cost, n)
+	}
+	name := "Iron Pickaxe"
+	if res, _, _ := anvilResult(pick, item.Stack{}, &name, false); !res.Empty() {
+		t.Errorf("the default name is not a rename: %v", res)
+	}
+	name = "Digger"
+	if res, cost, _ := anvilResult(pick, item.Stack{}, &name, false); res.CustomName() != "Digger" || cost != 1 {
+		t.Errorf("rename: %v cost %d", res, cost)
+	}
+	if g := grindResult(pick, item.Stack{}); g.Empty() {
+		t.Error("grindstone gave nothing for one pickaxe")
+	}
+}

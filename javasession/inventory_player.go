@@ -54,6 +54,13 @@ type itemState struct {
 	fnOff    inventory.SlotFunc
 	fnArmour inventory.SlotFunc
 	fnUI     inventory.SlotFunc
+	ender    *inventory.Inventory
+	fnEnder  inventory.SlotFunc
+
+	// The open block window (nil: only the player's inventory) and the last window id used. Both
+	// are only touched in the player's world transactions.
+	open     atomic.Pointer[menu]
+	windowID int32
 
 	// The transaction and player of the latest HandleInventories: the slot funcs run inside it.
 	ctxMu sync.Mutex
@@ -92,28 +99,38 @@ func (st *itemState) current() (*world.Tx, session.Controllable) {
 }
 
 // HandleInventories is called each time the player entity is opened in a transaction. The first
-// call sends the whole inventory and the held slot.
-func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, offHand, _, ui *inventory.Inventory, armour *inventory.Armour, heldSlot *uint32) {
+// call sends the whole inventory, the held slot and the recipe data the client needs for its
+// windows; later calls also check that an open block window is still valid.
+func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, offHand, enderChest, ui *inventory.Inventory, armour *inventory.Armour, heldSlot *uint32) {
 	st := s.items()
 	st.ctxMu.Lock()
 	st.tx, st.c = tx, c
 	st.ctxMu.Unlock()
 
 	st.mu.Lock()
-	if st.inv != inv || st.offHand != offHand || st.ui != ui || st.armour != armour {
-		st.inv, st.offHand, st.ui, st.armour, st.heldSlot = inv, offHand, ui, armour, heldSlot
+	if st.inv != inv || st.offHand != offHand || st.ui != ui || st.armour != armour || st.ender != enderChest {
+		st.inv, st.offHand, st.ui, st.armour, st.heldSlot, st.ender = inv, offHand, ui, armour, heldSlot, enderChest
 		inv.SlotFunc(st.fnInv)
 		offHand.SlotFunc(st.fnOff)
 		armour.Inventory().SlotFunc(st.fnArmour)
 		ui.SlotFunc(st.fnUI)
+		if enderChest != nil {
+			enderChest.SlotFunc(st.fnEnder)
+		}
 	}
 	st.heldSlot = heldSlot
 	st.mu.Unlock()
 
 	if !st.sent.Swap(true) {
+		s.sendRecipes()
 		s.sendInventory()
 		s.sendHeldSlot(int(*heldSlot))
+		if containerTest {
+			s.containerTestSetup()
+		}
+		return
 	}
+	s.checkMenu(tx, c)
 }
 
 // newItemState makes the inventory state with its slot funcs (allocated once, not per transaction).
@@ -142,10 +159,15 @@ func newItemState(s *Session) *itemState {
 		}
 	}
 	st.fnUI = func(slot int, _, after item.Stack) {
-		if slot == cursorUISlot && !st.applying.Load() {
-			s.sendCursor(after)
+		if slot == cursorUISlot {
+			if !st.applying.Load() {
+				s.sendCursor(after)
+			}
+			return
 		}
+		s.uiSlotChanged(slot, after)
 	}
+	st.fnEnder = func(slot int, _, after item.Stack) { s.enderSlotChanged(slot, after) }
 	return st
 }
 
@@ -175,28 +197,36 @@ func mainToJava(i int) int {
 	return i
 }
 
-// slotRef is the Dragonfly inventory and slot behind Java window slot js (none for the crafting slots).
-func (st *itemState) slotRef(js int) (*inventory.Inventory, int, bool) {
+// playerRef is the slot behind slot js of the player's window (window 0). The crafting result has
+// no inventory behind it: it is computed from the grid, which lives in the UI inventory.
+func (st *itemState) playerRef(js int) (slotRef, bool) {
 	switch {
+	case js == 0:
+		return slotRef{kind: kindResult}, true
+	case js >= 1 && js <= slotCraftEnd:
+		return slotRef{st.ui, uiCraftSmall + js - 1, kindPlain}, true
 	case js >= slotArmour && js < slotMain:
-		return st.armour.Inventory(), js - slotArmour, true
+		return slotRef{st.armour.Inventory(), js - slotArmour, kindArmour}, true
 	case js >= slotMain && js < slotHotbar:
-		return st.inv, js, true
+		return slotRef{st.inv, js, kindPlain}, true
 	case js >= slotHotbar && js < slotOffhand:
-		return st.inv, js - slotHotbar, true
+		return slotRef{st.inv, js - slotHotbar, kindPlain}, true
 	case js == slotOffhand:
-		return st.offHand, 0, true
+		return slotRef{st.offHand, 0, kindPlain}, true
 	}
-	return nil, 0, false
+	return slotRef{}, false
 }
 
-// slotItem is the stack in Java window slot js.
+// slotItem is the stack in slot js of the player's window.
 func (st *itemState) slotItem(js int) item.Stack {
-	inv, i, ok := st.slotRef(js)
-	if !ok {
+	if js == 0 {
+		return st.playerCraftResult()
+	}
+	r, ok := st.playerRef(js)
+	if !ok || r.inv == nil {
 		return item.Stack{}
 	}
-	it, _ := inv.Item(i)
+	it, _ := r.inv.Item(r.idx)
 	return it
 }
 

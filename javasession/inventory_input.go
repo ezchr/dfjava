@@ -23,7 +23,7 @@ const (
 )
 
 // handleInventoryPacket handles the inventory packets: held slot, creative slots, clicks in and
-// closing of the player's inventory. handled is false for other packets.
+// closing of windows, window buttons, anvil names and beacons. handled is false for other packets.
 func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, err error) {
 	r := wire.NewReader(body)
 	st := s.items()
@@ -68,22 +68,43 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 		if r.Err != nil {
 			return true, r.Err
 		}
-		s.do(func(_ *world.Tx, c session.Controllable) {
-			if window == windowPlayer {
-				s.click(c, k)
+		s.do(func(tx *world.Tx, c session.Controllable) {
+			m := st.menu()
+			if window == m.id {
+				s.click(tx, c, m, k)
 			}
-			s.sendInventory()
+			s.syncWindow(tx, c, m)
 		})
 	case v777.ServerboundPlayContainerClose:
 		window := r.VarInt()
 		if r.Err != nil {
 			return true, r.Err
 		}
-		if window == windowPlayer {
-			st.drag = dragState{}
-			// Vanilla puts the cursor (and crafting grid) back into the inventory, or drops it.
-			s.do(func(_ *world.Tx, c session.Controllable) { c.MoveItemsToInventory() })
+		s.do(func(tx *world.Tx, c session.Controllable) { s.clientClosed(tx, c, window) })
+	case v777.ServerboundPlayContainerButtonClick:
+		window, button := r.VarInt(), r.VarInt()
+		if r.Err != nil {
+			return true, r.Err
 		}
+		s.do(func(tx *world.Tx, c session.Controllable) { s.menuButton(tx, c, window, int(button)) })
+	case v777.ServerboundPlayRenameItem:
+		name := r.String(32767)
+		if r.Err != nil {
+			return true, r.Err
+		}
+		s.do(func(tx *world.Tx, c session.Controllable) { s.renameItem(tx, c, name) })
+	case v777.ServerboundPlaySetBeacon:
+		var effects [2]int32
+		for i := range effects {
+			effects[i] = -1
+			if r.Bool() {
+				effects[i] = r.VarInt()
+			}
+		}
+		if r.Err != nil {
+			return true, r.Err
+		}
+		s.do(func(tx *world.Tx, c session.Controllable) { s.setBeacon(tx, c, effects[0], effects[1]) })
 	default:
 		return false, nil
 	}
@@ -144,19 +165,19 @@ func (s *Session) creativeSlot(c session.Controllable, slot int, js *jitem.Stack
 		}
 		return
 	}
-	inv, i, ok := st.slotRef(slot)
-	if !ok {
+	ref, ok := st.playerRef(slot)
+	if !ok || ref.inv == nil {
 		return
 	}
-	if !mayPlace(slot, ds) {
+	if !ref.mayPlace(ds) {
 		s.sendSlot(slot, st.slotItem(slot))
 		return
 	}
-	if old, _ := inv.Item(i); !old.Empty() {
+	if old, _ := ref.inv.Item(ref.idx); !old.Empty() {
 		copy(st.recent[:], st.recent[1:])
 		st.recent[len(st.recent)-1] = old
 	}
-	_ = inv.SetItem(i, ds)
+	_ = ref.inv.SetItem(ref.idx, ds)
 }
 
 // creativeStack turns a stack from a creative client into a Dragonfly stack. A stack the server
@@ -201,7 +222,7 @@ func (st *itemState) creativeStack(js *jitem.Stack) (item.Stack, bool) {
 	return dragonflyStack(js)
 }
 
-// click is a container_click in the player's window.
+// click is a container_click.
 type click struct {
 	slot, button, mode int
 }
@@ -213,39 +234,62 @@ type dragState struct {
 	slots  []int
 }
 
-// view is the player window during a click: changes are made here, checked against the inventory
-// handlers, then applied at once.
+// view is a window during a click: changes are made here, checked against the inventory handlers,
+// then applied at once (vanilla AbstractContainerMenu.doClick, on copies).
 type view struct {
-	st     *itemState
-	c      session.Controllable
-	orig   [playerSlots]item.Stack
-	slots  [playerSlots]item.Stack
+	st    *itemState
+	c     session.Controllable
+	tx    *world.Tx
+	m     *menu
+	n     int // slots the client sees
+	total int // with the hidden off-hand of block windows
+	res   int // computed result slot, -1 if none
+
+	refs   [maxWindow]slotRef
+	orig   [maxWindow]item.Stack
+	slots  [maxWindow]item.Stack
 	cursor item.Stack
 	ocur   item.Stack
 	drops  []drop
+	after  []func() // effects of taking results (levels, experience, sounds), run once applied
+
+	craft craftMatch // the recipe behind the crafting result
 }
 
 // drop is a stack a click throws out of the window, from a slot or the cursor.
 type drop struct {
-	from int // Java slot, or cursorDrop
+	from int // window slot, cursorDrop or resultDrop
 	it   item.Stack
 }
 
-const cursorDrop = -1
+const (
+	cursorDrop = -1
+	resultDrop = -2
+)
 
-func (s *Session) click(c session.Controllable, k click) {
-	st := s.items()
-	if st.inv == nil {
-		return
-	}
-	v := &view{st: st, c: c}
-	for js := range playerSlots {
-		v.orig[js] = st.slotItem(js)
+func (st *itemState) newView(tx *world.Tx, c session.Controllable, m *menu) *view {
+	v := &view{st: st, c: c, tx: tx, m: m, n: m.slots(), res: m.resultSlot()}
+	v.total = st.refs(m, &v.refs)
+	for js := range v.total {
+		if r := &v.refs[js]; r.inv != nil {
+			v.orig[js], _ = r.inv.Item(r.idx)
+		}
 	}
 	v.slots = v.orig
 	v.ocur = st.cursor()
 	v.cursor = v.ocur
-	creative := c.GameMode().CreativeInventory()
+	m.creative = c.GameMode().CreativeInventory()
+	v.updateResult()
+	return v
+}
+
+func (s *Session) click(tx *world.Tx, c session.Controllable, m *menu, k click) {
+	st := s.items()
+	if st.inv == nil {
+		return
+	}
+	v := st.newView(tx, c, m)
+	creative := m.creative
 
 	if k.mode != clickQuickCraft {
 		st.drag = dragState{}
@@ -254,7 +298,7 @@ func (s *Session) click(c session.Controllable, k click) {
 	case clickPickup:
 		v.pickup(k.slot, k.button)
 	case clickQuickMove:
-		if v.valid(k.slot) {
+		if v.valid(k.slot) && (k.button == 0 || k.button == 1) {
 			v.quickMove(k.slot)
 		}
 	case clickSwap:
@@ -265,58 +309,17 @@ func (s *Session) click(c session.Controllable, k click) {
 			v.cursor = it.Grow(it.MaxCount() - it.Count())
 		}
 	case clickThrow:
-		if v.valid(k.slot) && v.cursor.Empty() && !v.slots[k.slot].Empty() {
-			it := v.slots[k.slot]
-			n := it.Count()
-			if k.button == 0 {
-				n = 1
-			}
-			v.drops = append(v.drops, drop{k.slot, it.Grow(n - it.Count())})
-			v.slots[k.slot] = it.Grow(-n)
-		}
+		v.throw(k.slot, k.button)
 	case clickQuickCraft:
 		v.quickCraft(k, creative)
 	case clickPickupAll:
-		v.pickupAll(k.slot)
+		v.pickupAll(k.slot, k.button)
 	}
 	v.commit()
 }
 
-// valid reports whether js is a slot items can be taken from or put in (not the crafting slots,
-// which Dragonfly has no Java crafting for yet).
-func (v *view) valid(js int) bool { return js > slotCraftEnd && js < playerSlots }
-
-// mayPlace reports whether stack it can go in Java slot js.
-func mayPlace(js int, it item.Stack) bool {
-	if js <= slotCraftEnd || js >= playerSlots {
-		return false
-	}
-	if it.Empty() || js < slotArmour || js >= slotMain {
-		return true
-	}
-	switch js - slotArmour {
-	case 0:
-		h, ok := it.Item().(item.HelmetType)
-		return ok && h.Helmet()
-	case 1:
-		c, ok := it.Item().(item.ChestplateType)
-		return ok && c.Chestplate()
-	case 2:
-		l, ok := it.Item().(item.LeggingsType)
-		return ok && l.Leggings()
-	default:
-		b, ok := it.Item().(item.BootsType)
-		return ok && b.Boots()
-	}
-}
-
-// maxIn is how many of it fit in slot js.
-func maxIn(js int, it item.Stack) int {
-	if js >= slotArmour && js < slotMain {
-		return 1
-	}
-	return it.MaxCount()
-}
+// valid reports whether js is a slot of the window.
+func (v *view) valid(js int) bool { return js >= 0 && js < v.n && v.refs[js].kind != kindNone }
 
 func (v *view) pickup(js, button int) {
 	if button != 0 && button != 1 {
@@ -336,19 +339,28 @@ func (v *view) pickup(js, button int) {
 	if !v.valid(js) {
 		return
 	}
+	if js == v.res {
+		res := v.slots[js]
+		switch {
+		case res.Empty() || !v.mayTakeResult():
+		case v.cursor.Empty():
+			v.cursor = res
+			v.takeResult()
+		case v.cursor.Comparable(res) && v.cursor.Count()+res.Count() <= v.cursor.MaxCount():
+			v.cursor = v.cursor.Grow(res.Count())
+			v.takeResult()
+		}
+		return
+	}
+	r := &v.refs[js]
 	it, cur := v.slots[js], v.cursor
 	switch {
 	case it.Empty():
-		if cur.Empty() || !mayPlace(js, cur) {
-			return
-		}
 		n := cur.Count()
 		if button == 1 {
 			n = 1
 		}
-		n = min(n, maxIn(js, cur))
-		v.slots[js] = cur.Grow(n - cur.Count())
-		v.cursor = cur.Grow(-n)
+		v.insert(js, n)
 	case cur.Empty():
 		n := it.Count()
 		if button == 1 {
@@ -356,92 +368,374 @@ func (v *view) pickup(js, button int) {
 		}
 		v.cursor = it.Grow(n - it.Count())
 		v.slots[js] = it.Grow(-n)
-	case mayPlace(js, cur) && it.Comparable(cur):
-		n := cur.Count()
-		if button == 1 {
-			n = 1
+	case r.mayPlace(cur):
+		if it.Comparable(cur) {
+			n := cur.Count()
+			if button == 1 {
+				n = 1
+			}
+			v.insert(js, n)
+		} else if cur.Count() <= r.maxIn(cur) {
+			v.slots[js], v.cursor = cur, it
 		}
-		n = min(n, maxIn(js, it)-it.Count())
-		if n > 0 {
-			v.slots[js] = it.Grow(n)
-			v.cursor = cur.Grow(-n)
+	case it.Comparable(cur):
+		// A slot that takes nothing (furnace output): take all of it if it fits on the cursor.
+		if it.Count() <= cur.MaxCount()-cur.Count() {
+			v.cursor = cur.Grow(it.Count())
+			v.slots[js] = item.Stack{}
 		}
-	case mayPlace(js, cur) && cur.Count() <= maxIn(js, cur):
-		v.slots[js], v.cursor = cur, it
 	}
 }
 
-// moveTo moves as much of it as fits into slots [from, to): first onto equal stacks, then into empty
-// slots (AbstractContainerMenu.moveItemStackTo). It returns what is left.
-func (v *view) moveTo(it item.Stack, from, to int) item.Stack {
-	for js := from; js < to && !it.Empty(); js++ {
-		s := v.slots[js]
-		if s.Empty() || !s.Comparable(it) || !mayPlace(js, it) {
-			continue
+// insert puts up to n of the cursor into slot js (Slot.safeInsert).
+func (v *view) insert(js, n int) {
+	r, cur := &v.refs[js], v.cursor
+	if cur.Empty() || !r.mayPlace(cur) {
+		return
+	}
+	it := v.slots[js]
+	have := 0
+	if !it.Empty() {
+		if !it.Comparable(cur) {
+			return
 		}
-		n := min(it.Count(), maxIn(js, s)-s.Count())
-		if n > 0 {
-			v.slots[js] = s.Grow(n)
+		have = it.Count()
+	}
+	n = min(n, cur.Count(), r.maxIn(cur)-have)
+	if n <= 0 {
+		return
+	}
+	v.slots[js] = cur.Grow(have + n - cur.Count())
+	v.cursor = cur.Grow(-n)
+}
+
+// moveStack moves as much of *it as fits into slots [from, to): first onto equal stacks, then into
+// one empty slot (AbstractContainerMenu.moveItemStackTo). It reports whether anything moved.
+func (v *view) moveStack(it *item.Stack, from, to int, backwards bool) bool {
+	changed := false
+	start, step := from, 1
+	if backwards {
+		start, step = to-1, -1
+	}
+	in := func(js int) bool { return js >= from && js < to }
+	if it.MaxCount() > 1 {
+		for js := start; !it.Empty() && in(js); js += step {
+			r, s := &v.refs[js], v.slots[js]
+			if s.Empty() || r.kind == kindResult || r.kind == kindNone || !s.Comparable(*it) {
+				continue
+			}
+			if n := min(it.Count(), r.maxIn(s)-s.Count()); n > 0 {
+				v.slots[js] = s.Grow(n)
+				*it = it.Grow(-n)
+				changed = true
+			}
+		}
+	}
+	if !it.Empty() {
+		for js := start; in(js); js += step {
+			r := &v.refs[js]
+			if v.slots[js].Empty() && r.inv != nil && r.mayPlace(*it) {
+				n := min(it.Count(), r.maxIn(*it))
+				v.slots[js] = it.Grow(n - it.Count())
+				*it = it.Grow(-n)
+				changed = true
+				break
+			}
+		}
+	}
+	return changed
+}
+
+// addToInventory adds a stack to the player's inventory part of the window like Inventory.add
+// (onto equal stacks, then empty slots, hotbar first) and returns what did not fit.
+func (v *view) addToInventory(it item.Stack) item.Stack {
+	m := v.m
+	order := func(f func(js int) bool) {
+		for i := range 9 {
+			if !f(m.hotbar(i)) {
+				return
+			}
+		}
+		for js := m.invStart(); js < m.hotbarStart(); js++ {
+			if !f(js) {
+				return
+			}
+		}
+	}
+	order(func(js int) bool {
+		s := v.slots[js]
+		if !s.Empty() && s.Comparable(it) {
+			n := min(it.Count(), s.MaxCount()-s.Count())
+			if n > 0 {
+				v.slots[js] = s.Grow(n)
+				it = it.Grow(-n)
+			}
+		}
+		return !it.Empty()
+	})
+	order(func(js int) bool {
+		if v.slots[js].Empty() {
+			n := min(it.Count(), it.MaxCount())
+			v.slots[js] = it.Grow(n - it.Count())
 			it = it.Grow(-n)
 		}
-	}
-	for js := from; js < to && !it.Empty(); js++ {
-		if !v.slots[js].Empty() || !mayPlace(js, it) {
-			continue
-		}
-		n := min(it.Count(), maxIn(js, it))
-		v.slots[js] = it.Grow(n - it.Count())
-		it = it.Grow(-n)
-	}
+		return !it.Empty()
+	})
 	return it
 }
 
-// quickMove is a shift-click (InventoryMenu.quickMoveStack).
+// quickMove is a shift-click: vanilla repeats quickMoveStack while the slot still holds the same
+// item (crafting as many as possible from a result slot).
 func (v *view) quickMove(js int) {
-	it := v.slots[js]
-	if it.Empty() {
-		return
-	}
-	var left item.Stack
-	armourSlot := -1
-	for a := slotArmour; a < slotMain; a++ {
-		if mayPlace(a, it) {
-			armourSlot = a
-			break
+	for range 256 {
+		before := v.slots[js]
+		if before.Empty() || !v.quickMoveOnce(js) {
+			return
+		}
+		if !sameKindStacks(v.slots[js], before) {
+			return
 		}
 	}
-	switch {
-	case js >= slotArmour && js < slotMain, js == slotOffhand:
-		left = v.moveTo(it, slotMain, slotOffhand)
-	case armourSlot >= 0 && v.slots[armourSlot].Empty():
-		left = v.moveTo(it, armourSlot, armourSlot+1)
-	case js >= slotMain && js < slotHotbar:
-		left = v.moveTo(it, slotHotbar, slotOffhand)
-	default: // hotbar
-		left = v.moveTo(it, slotMain, slotHotbar)
+}
+
+// quickMoveOnce is one quickMoveStack. It reports whether anything moved.
+func (v *view) quickMoveOnce(js int) bool {
+	if js == v.res {
+		res := v.slots[js]
+		if res.Empty() || !v.mayTakeResult() {
+			return false
+		}
+		it := res
+		if !v.moveStack(&it, v.m.invStart(), v.m.invEnd(), true) {
+			return false
+		}
+		v.takeResult()
+		if !it.Empty() {
+			v.drops = append(v.drops, drop{resultDrop, it})
+		}
+		return true
 	}
-	v.slots[js] = left
+	it := v.slots[js]
+	count := it.Count()
+	ok := v.quickRoute(js, &it)
+	v.slots[js] = it
+	return ok && it.Count() != count
+}
+
+// quickRoute moves *it out of slot js where the window's quickMoveStack sends it. It returns false
+// where vanilla stops early.
+func (v *view) quickRoute(js int, it *item.Stack) bool {
+	m := v.m
+	inv, hot, end := m.invStart(), m.hotbarStart(), m.invEnd()
+	// The usual move between the main inventory and the hotbar.
+	between := func() bool {
+		if js >= inv && js < hot {
+			return v.moveStack(it, hot, end, false)
+		}
+		if js >= hot && js < end {
+			return v.moveStack(it, inv, hot, false)
+		}
+		return false
+	}
+	switch m.kind {
+	case menuPlayer:
+		if js >= 1 && js < slotMain {
+			return v.moveStack(it, slotMain, slotOffhand, false)
+		}
+		for a := slotArmour; a < slotMain; a++ {
+			if v.refs[a].mayPlace(*it) && v.slots[a].Empty() {
+				return v.moveStack(it, a, a+1, false)
+			}
+		}
+		if js < slotOffhand {
+			return between()
+		}
+		return v.moveStack(it, slotMain, slotOffhand, false)
+	case menuChest, menuShulker, menuHopper:
+		if js < m.size {
+			return v.moveStack(it, m.size, m.slots(), true)
+		}
+		return v.moveStack(it, 0, m.size, false)
+	case menuFurnace:
+		switch {
+		case js == 2:
+			return v.moveStack(it, inv, end, true)
+		case js > 2:
+			switch {
+			case m.canSmelt(*it):
+				return v.moveStack(it, 0, 1, false)
+			case isFuel(*it):
+				return v.moveStack(it, 1, 2, false)
+			}
+			return between()
+		}
+		return v.moveStack(it, inv, end, false)
+	case menuBrewing:
+		if js < 5 {
+			return v.moveStack(it, inv, end, true)
+		}
+		fuel, ing := &v.refs[4], &v.refs[3]
+		switch {
+		case fuel.mayPlace(*it):
+			if v.moveStack(it, 4, 5, false) {
+				return false
+			}
+			return !ing.mayPlace(*it) || v.moveStack(it, 3, 4, false)
+		case ing.mayPlace(*it):
+			return v.moveStack(it, 3, 4, false)
+		case v.refs[0].mayPlace(*it):
+			return v.moveStack(it, 0, 3, false)
+		}
+		return between()
+	case menuCrafting:
+		if js < 10 {
+			return v.moveStack(it, inv, end, false)
+		}
+		if v.moveStack(it, 1, 10, false) {
+			return true
+		}
+		return between()
+	case menuAnvil, menuSmithing:
+		res := m.resultSlot()
+		if js < res {
+			return v.moveStack(it, inv, end, false)
+		}
+		if v.canMoveIntoInputs(*it) {
+			return v.moveStack(it, 0, res, false)
+		}
+		return between()
+	case menuEnchanting:
+		switch {
+		case js < 2:
+			return v.moveStack(it, inv, end, true)
+		case v.refs[1].mayPlace(*it):
+			return v.moveStack(it, 1, 2, true)
+		case !v.slots[0].Empty() || !v.refs[0].mayPlace(*it):
+			return false
+		}
+		v.slots[0] = it.Grow(1 - it.Count())
+		*it = it.Grow(-1)
+		return true
+	case menuGrindstone:
+		if js < 2 {
+			return v.moveStack(it, inv, end, false)
+		}
+		if !v.slots[0].Empty() && !v.slots[1].Empty() {
+			return between()
+		}
+		return v.moveStack(it, 0, 2, false)
+	case menuStonecutter:
+		switch {
+		case js == 0:
+			return v.moveStack(it, inv, end, false)
+		case len(stonecutterFor(*it)) > 0:
+			return v.moveStack(it, 0, 1, false)
+		}
+		return between()
+	case menuLoom:
+		if js < 3 {
+			return v.moveStack(it, inv, end, false)
+		}
+		for i := range 3 {
+			if v.refs[i].mayPlace(*it) {
+				return v.moveStack(it, i, i+1, false)
+			}
+		}
+		return between()
+	case menuBeacon:
+		switch {
+		case js == 0:
+			return v.moveStack(it, inv, end, true)
+		case v.slots[0].Empty() && v.refs[0].mayPlace(*it) && it.Count() == 1:
+			return v.moveStack(it, 0, 1, false)
+		}
+		return between()
+	}
+	return false
+}
+
+// canMoveIntoInputs is ItemCombinerMenu.canMoveIntoInputSlots: anvils take anything, smithing
+// tables only what fits one of their empty input slots.
+func (v *view) canMoveIntoInputs(it item.Stack) bool {
+	if v.m.kind != menuSmithing {
+		return true
+	}
+	for i := range 3 {
+		if v.refs[i].mayPlace(it) && v.slots[i].Empty() {
+			return true
+		}
+	}
+	return false
 }
 
 // swap swaps a slot with a hotbar slot (number keys, button 0-8) or the off-hand (F, button 40).
 func (v *view) swap(js, button int) {
-	var other int
+	var hb int
 	switch {
 	case button >= 0 && button < 9:
-		other = slotHotbar + button
+		hb = v.m.hotbar(button)
 	case button == 40:
-		other = slotOffhand
+		hb = v.m.offhand()
 	default:
 		return
 	}
-	if !v.valid(js) || js == other {
+	if !v.valid(js) {
 		return
 	}
-	a, b := v.slots[js], v.slots[other]
-	if !mayPlace(js, b) || b.Count() > maxIn(js, b) {
+	src, tgt := v.slots[hb], v.slots[js]
+	if js == v.res {
+		if src.Empty() && !tgt.Empty() && v.mayTakeResult() {
+			v.slots[hb] = tgt
+			v.takeResult()
+		}
 		return
 	}
-	v.slots[js], v.slots[other] = b, a
+	r := &v.refs[js]
+	switch {
+	case src.Empty() && tgt.Empty():
+	case src.Empty():
+		v.slots[hb], v.slots[js] = tgt, item.Stack{}
+	case !r.mayPlace(src):
+	case src.Count() > r.maxIn(src):
+		n := r.maxIn(src)
+		v.slots[js] = src.Grow(n - src.Count())
+		v.slots[hb] = src.Grow(-n)
+		if !tgt.Empty() {
+			if left := v.addToInventory(tgt); !left.Empty() {
+				v.drops = append(v.drops, drop{resultDrop, left})
+			}
+		}
+	default:
+		v.slots[hb], v.slots[js] = tgt, src
+	}
+}
+
+// throw is Q (button 0, one item) or Ctrl+Q (button 1, the stack) over a slot.
+func (v *view) throw(js, button int) {
+	if !v.cursor.Empty() || !v.valid(js) || v.slots[js].Empty() {
+		return
+	}
+	if js == v.res {
+		for range 256 {
+			res := v.slots[js]
+			if res.Empty() || !v.mayTakeResult() {
+				return
+			}
+			v.drops = append(v.drops, drop{resultDrop, res})
+			v.takeResult()
+			if button == 0 || !sameKindStacks(v.slots[js], res) {
+				return
+			}
+		}
+		return
+	}
+	it := v.slots[js]
+	n := it.Count()
+	if button == 0 {
+		n = 1
+	}
+	v.drops = append(v.drops, drop{js, it.Grow(n - it.Count())})
+	v.slots[js] = it.Grow(-n)
 }
 
 // quickCraft handles a drag: start (slot -999), one packet per slot, end (slot -999).
@@ -456,11 +750,11 @@ func (v *view) quickCraft(k click, creative bool) {
 		}
 		d.active, d.kind, d.slots = true, kind, d.slots[:0]
 	case 1:
-		if !d.active || kind != d.kind || !v.valid(k.slot) || len(d.slots) >= playerSlots {
+		if !d.active || kind != d.kind || !v.valid(k.slot) || len(d.slots) >= maxWindow {
 			return
 		}
-		it := v.slots[k.slot]
-		if !mayPlace(k.slot, v.cursor) || (!it.Empty() && !it.Comparable(v.cursor)) {
+		r, it := &v.refs[k.slot], v.slots[k.slot]
+		if !r.mayPlace(v.cursor) || (!it.Empty() && !it.Comparable(v.cursor)) {
 			return
 		}
 		for _, js := range d.slots {
@@ -488,8 +782,8 @@ func (v *view) quickCraft(k click, creative bool) {
 		cur := v.cursor
 		left := cur.Count()
 		for _, js := range slots {
-			it := v.slots[js]
-			if !mayPlace(js, cur) || (!it.Empty() && !it.Comparable(cur)) {
+			r, it := &v.refs[js], v.slots[js]
+			if !r.mayPlace(cur) || (!it.Empty() && !it.Comparable(cur)) {
 				continue
 			}
 			var n int
@@ -505,7 +799,7 @@ func (v *view) quickCraft(k click, creative bool) {
 			if !it.Empty() {
 				have = it.Count()
 			}
-			n = min(n, maxIn(js, cur)-have)
+			n = min(n, r.maxIn(cur)-have)
 			if kind != 2 {
 				n = min(n, left)
 			}
@@ -523,17 +817,22 @@ func (v *view) quickCraft(k click, creative bool) {
 	}
 }
 
-// pickupAll is a double click: gather equal stacks into the cursor, non-full stacks first.
-func (v *view) pickupAll(js int) {
+// pickupAll is a double click: gather equal stacks into the cursor, non-full stacks first (button
+// 1 goes through the window backwards).
+func (v *view) pickupAll(js, button int) {
 	cur := v.cursor
-	if cur.Empty() || (v.valid(js) && !v.slots[js].Empty()) {
+	if cur.Empty() || js < 0 || (v.valid(js) && !v.slots[js].Empty()) {
 		return
+	}
+	start, step := 0, 1
+	if button != 0 {
+		start, step = v.n-1, -1
 	}
 	limit := cur.MaxCount()
 	for pass := 0; pass < 2 && cur.Count() < limit; pass++ {
-		for s := slotArmour; s < playerSlots && cur.Count() < limit; s++ {
+		for s := start; s >= 0 && s < v.n && cur.Count() < limit; s += step {
 			it := v.slots[s]
-			if it.Empty() || !it.Comparable(cur) || (pass == 0 && it.Count() == it.MaxCount()) {
+			if v.refs[s].inv == nil || it.Empty() || !it.Comparable(cur) || (pass == 0 && it.Count() == it.MaxCount()) {
 				continue
 			}
 			n := min(it.Count(), limit-cur.Count())
@@ -550,35 +849,36 @@ func (v *view) commit() {
 	st := v.st
 	ctx := event.C(inventory.Holder(v.c))
 	changed := false
-	for js := range playerSlots {
-		before, after := v.orig[js], v.slots[js]
-		if before.Equal(after) {
+	for js := range v.total {
+		r := &v.refs[js]
+		if r.inv == nil || v.orig[js].Equal(v.slots[js]) {
 			continue
 		}
 		changed = true
-		inv, i, _ := st.slotRef(js)
-		takeAndPlace(ctx, inv.Handler(), i, before, after)
+		takeAndPlace(ctx, r.inv.Handler(), r.idx, v.orig[js], v.slots[js])
 	}
 	if !v.ocur.Equal(v.cursor) {
 		changed = true
 		takeAndPlace(ctx, st.ui.Handler(), cursorUISlot, v.ocur, v.cursor)
 	}
 	for _, d := range v.drops {
-		if d.from == cursorDrop {
+		switch d.from {
+		case cursorDrop:
 			st.ui.Handler().HandleDrop(ctx, cursorUISlot, d.it)
-		} else {
-			inv, i, _ := st.slotRef(d.from)
-			inv.Handler().HandleDrop(ctx, i, d.it)
+		case resultDrop:
+		default:
+			r := &v.refs[d.from]
+			r.inv.Handler().HandleDrop(ctx, r.idx, d.it)
 		}
 	}
 	if !changed || ctx.Cancelled() {
 		return
 	}
+	smelted := v.m.kind == menuFurnace && v.slots[2].Count() < v.orig[2].Count()
 	st.applying.Store(true)
-	for js := range playerSlots {
-		if !v.orig[js].Equal(v.slots[js]) {
-			inv, i, _ := st.slotRef(js)
-			_ = inv.SetItem(i, v.slots[js])
+	for js := range v.total {
+		if r := &v.refs[js]; r.inv != nil && !v.orig[js].Equal(v.slots[js]) {
+			_ = r.inv.SetItem(r.idx, v.slots[js])
 		}
 	}
 	if !v.ocur.Equal(v.cursor) {
@@ -590,6 +890,12 @@ func (v *view) commit() {
 			// A drop a player handler cancelled goes back into the inventory.
 			_, _ = st.inv.AddItem(d.it.Grow(-n))
 		}
+	}
+	for _, f := range v.after {
+		f()
+	}
+	if smelted {
+		v.furnaceExperience()
 	}
 }
 
