@@ -9,6 +9,7 @@ import (
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/item"
+	"github.com/df-mc/dragonfly/server/item/enchantment"
 	"github.com/df-mc/dragonfly/server/world"
 )
 
@@ -113,7 +114,10 @@ func TestAnvilAndGrindstone(t *testing.T) {
 	if res, cost, _ := anvilResult(pick, item.Stack{}, &name, false); res.CustomName() != "Digger" || cost != 1 {
 		t.Errorf("rename: %v cost %d", res, cost)
 	}
-	if g := grindResult(pick, item.Stack{}); g.Empty() {
-		t.Error("grindstone gave nothing for one pickaxe")
+	if g := grindResult(pick, item.Stack{}); !g.Empty() {
+		t.Errorf("grindstone gave %v for one unenchanted pickaxe (vanilla: nothing)", g)
+	}
+	if g := grindResult(pick.WithEnchantments(item.NewEnchantment(enchantment.Efficiency, 2)), item.Stack{}); g.Empty() || len(g.Enchantments()) != 0 {
+		t.Errorf("grindstone gave %v for one enchanted pickaxe", g)
 	}
 }

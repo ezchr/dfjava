@@ -8,7 +8,6 @@ import (
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/item/enchantment"
-	"github.com/df-mc/dragonfly/server/item/inventory"
 	"github.com/df-mc/dragonfly/server/item/potion"
 	jitem "github.com/ezchr/go-mc/java/item"
 	"github.com/ezchr/go-mc/java/wire"
@@ -54,7 +53,7 @@ func TestDragonflyStackRoundTrip(t *testing.T) {
 		item.NewStack(item.Diamond{}, 64),
 		item.NewStack(item.Sword{Tier: item.ToolTierDiamond}, 1).Damage(100).WithCustomName("§bBlade").
 			WithLore("a", "b").WithEnchantments(item.NewEnchantment(enchantment.Sharpness, 5), item.NewEnchantment(enchantment.Unbreaking, 3)),
-		item.NewStack(item.Pickaxe{Tier: item.ToolTierIron}, 1).AsUnbreakable(),
+		item.NewStack(item.Pickaxe{Tier: item.ToolTierIron}, 1).Damage(10),
 		item.NewStack(item.SplashPotion{Type: potion.LongSwiftness()}, 1),
 		item.NewStack(item.Arrow{Tip: potion.Poison()}, 16),
 		item.NewStack(item.EnchantedBook{}, 1).WithEnchantments(item.NewEnchantment(enchantment.Power, 4)),
@@ -130,26 +129,28 @@ func BenchmarkJavaStackSword(b *testing.B) {
 	}
 }
 
-// A stack a creative client moves around keeps the Dragonfly data Java can't carry.
+// A stack a creative client moves around keeps the Dragonfly data Java can't carry; a copy of a
+// stack that is still in the inventory does not.
 func TestCreativeKeepsValues(t *testing.T) {
-	st := newItemState(&Session{})
-	st.inv, st.offHand, st.ui = inventory.New(36, nil), inventory.New(1, nil), inventory.New(54, nil)
-	st.armour = inventory.NewArmour(nil)
+	st := itemsTestState()
 	ds := item.NewStack(item.Sword{Tier: item.ToolTierDiamond}, 1).WithCustomName("Kit").WithValue("kit", "pvp")
 	var js jitem.Stack
 	javaStack(ds, &js)
 
 	_ = st.inv.SetItem(0, ds)
-	if got, ok := st.creativeStack(&js); !ok || got.Values()["kit"] != "pvp" {
-		t.Errorf("from inventory: %v", got)
+	if got, src, ok := st.creativeStack(&js, 20); !ok || src != creativeCopy || got.CustomName() != "Kit" || len(got.Values()) != 0 {
+		t.Errorf("copy of a stack in the inventory: %v (from %d)", got, src)
+	}
+	if got, src, ok := st.creativeStack(&js, mainToJava(0)); !ok || src != creativeSelf || got.Values()["kit"] != "pvp" {
+		t.Errorf("same slot: %v (from %d)", got, src)
 	}
 	_ = st.inv.SetItem(0, item.Stack{})
 	st.recent[len(st.recent)-1] = ds
-	if got, ok := st.creativeStack(&js); !ok || got.Values()["kit"] != "pvp" {
-		t.Errorf("from recent: %v", got)
+	if got, src, ok := st.creativeStack(&js, 20); !ok || src != creativeMove || got.Values()["kit"] != "pvp" {
+		t.Errorf("from recent: %v (from %d)", got, src)
 	}
-	st.recent[len(st.recent)-1] = item.Stack{}
-	if got, ok := st.creativeStack(&js); !ok || got.CustomName() != "Kit" || len(got.Values()) != 0 {
-		t.Errorf("converted: %v", got)
+	// Taken: a second one is not another move.
+	if got, src, ok := st.creativeStack(&js, 21); !ok || src != creativeNew || got.CustomName() != "Kit" || len(got.Values()) != 0 {
+		t.Errorf("converted: %v (from %d)", got, src)
 	}
 }

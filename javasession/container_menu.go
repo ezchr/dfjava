@@ -108,8 +108,6 @@ type menu struct {
 	cookTotal int32 // furnaces: cooking time in ticks
 	smoker    bool
 
-	creative bool // the player had infinite materials at the last click
-
 	// Anvil: the name the client typed (nil until it sends one) and the last cost.
 	name    *string
 	cost    int
@@ -124,8 +122,6 @@ type menu struct {
 	dataSent  bool
 	lastCheck time.Time
 }
-
-var playerMenu = &menu{kind: menuPlayer, size: 5}
 
 // slots is the number of slots the client sees.
 func (m *menu) slots() int {
@@ -338,6 +334,24 @@ func (r *slotRef) mayPlace(it item.Stack) bool {
 		return smithing().base[itemName(it)]
 	case kindSmithAddition:
 		return smithing().addition[itemName(it)]
+	}
+	return true
+}
+
+// bindingCurse is the Bedrock id of Curse of Binding. Dragonfly does not register it yet, but a
+// plugin may.
+const bindingCurse = 27
+
+// mayPickup reports whether it, the stack in the slot, may be taken out (vanilla Slot.mayPickup):
+// not worn armour with Curse of Binding, unless the player is in creative (ArmorSlot.mayPickup).
+func (r *slotRef) mayPickup(it item.Stack, creative bool) bool {
+	if r.kind != kindArmour || creative || it.Empty() {
+		return true
+	}
+	for _, e := range it.Enchantments() {
+		if id, ok := item.EnchantmentID(e.Type()); ok && id == bindingCurse {
+			return false
+		}
 	}
 	return true
 }

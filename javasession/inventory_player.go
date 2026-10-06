@@ -49,7 +49,7 @@ type itemState struct {
 	offHand  *inventory.Inventory
 	ui       *inventory.Inventory
 	armour   *inventory.Armour
-	heldSlot *uint32
+	heldSlot atomic.Pointer[uint32] // read by the inventory slot func without mu
 	fnInv    inventory.SlotFunc
 	fnOff    inventory.SlotFunc
 	fnArmour inventory.SlotFunc
@@ -61,6 +61,18 @@ type itemState struct {
 	// are only touched in the player's world transactions.
 	open     atomic.Pointer[menu]
 	windowID int32
+	// player is the player's own inventory window (window 0). Every session has its own: a click
+	// writes into its menu, and worlds click at the same time.
+	player menu
+
+	// creative is whether the player had infinite materials in its latest transaction: the read
+	// goroutine only decodes a set_creative_mode_slot stack (which can be costly) for creative
+	// players. The transaction checks the game mode again.
+	creative atomic.Bool
+
+	// released is closed when Session.Close gave the items back (releaseItems).
+	released    chan struct{}
+	releaseOnce sync.Once
 
 	// The transaction and player of the latest HandleInventories: the slot funcs run inside it.
 	ctxMu sync.Mutex
@@ -79,6 +91,8 @@ type itemState struct {
 	in     jitem.Stack
 	drag   dragState
 	recent [recentCreative]item.Stack // stacks creative set_creative_mode_slot replaced, newest last
+	clone  creativeClone              // the last stack a creative client copied, stripped
+	drops  dropThrottle               // creative drops (set_creative_mode_slot -1)
 }
 
 func (st *itemState) nextStateID() int32 {
@@ -109,7 +123,7 @@ func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, o
 
 	st.mu.Lock()
 	if st.inv != inv || st.offHand != offHand || st.ui != ui || st.armour != armour || st.ender != enderChest {
-		st.inv, st.offHand, st.ui, st.armour, st.heldSlot, st.ender = inv, offHand, ui, armour, heldSlot, enderChest
+		st.inv, st.offHand, st.ui, st.armour, st.ender = inv, offHand, ui, armour, enderChest
 		inv.SlotFunc(st.fnInv)
 		offHand.SlotFunc(st.fnOff)
 		armour.Inventory().SlotFunc(st.fnArmour)
@@ -118,8 +132,9 @@ func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, o
 			enderChest.SlotFunc(st.fnEnder)
 		}
 	}
-	st.heldSlot = heldSlot
+	st.heldSlot.Store(heldSlot)
 	st.mu.Unlock()
+	st.creative.Store(c.GameMode().CreativeInventory())
 
 	if !st.sent.Swap(true) {
 		s.sendRecipes()
@@ -135,9 +150,9 @@ func (s *Session) HandleInventories(tx *world.Tx, c session.Controllable, inv, o
 
 // newItemState makes the inventory state with its slot funcs (allocated once, not per transaction).
 func newItemState(s *Session) *itemState {
-	st := &itemState{s: s}
+	st := &itemState{s: s, player: menu{kind: menuPlayer, size: 5}, released: make(chan struct{})}
 	st.fnInv = func(slot int, _, after item.Stack) {
-		if hs := st.heldSlot; hs != nil && slot == int(*hs) {
+		if hs := st.heldSlot.Load(); hs != nil && slot == int(*hs) {
 			st.broadcast(world.Viewer.ViewEntityItems)
 		}
 		if !st.applying.Load() {

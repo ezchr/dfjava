@@ -43,7 +43,7 @@ func (v *view) computeResult() item.Stack {
 		}
 		v.craft = craftMatch{}
 	case menuAnvil:
-		res, cost, n := anvilResult(v.slots[0], v.slots[1], m.name, m.creative)
+		res, cost, n := anvilResult(v.slots[0], v.slots[1], m.name, v.creative)
 		m.cost, m.repairN = cost, n
 		return res
 	case menuGrindstone:
@@ -67,7 +67,7 @@ func (v *view) computeResult() item.Stack {
 // mayTakeResult reports whether the result may be taken (an anvil wants its levels).
 func (v *view) mayTakeResult() bool {
 	if v.m.kind == menuAnvil {
-		return v.m.cost > 0 && (v.m.creative || v.c.ExperienceLevel() >= v.m.cost)
+		return v.m.cost > 0 && (v.creative || v.c.ExperienceLevel() >= v.m.cost)
 	}
 	return true
 }
@@ -99,7 +99,7 @@ func (v *view) takeResult() {
 			v.slots[js] = it
 		}
 	case menuAnvil:
-		cost, creative, pos, tx, c := m.cost, m.creative, m.pos, v.tx, v.c
+		cost, creative, pos, tx, c := m.cost, v.creative, m.pos, v.tx, v.c
 		v.slots[0] = item.Stack{}
 		if m.repairN > 0 {
 			v.slots[1] = v.slots[1].Grow(-m.repairN)
@@ -199,6 +199,10 @@ func (s *Session) menuButton(tx *world.Tx, c session.Controllable, window int32,
 	if m == nil || m.id != window {
 		return
 	}
+	if !s.menuStillValid(tx, c, m) {
+		s.closeMenu(tx, c, true)
+		return
+	}
 	switch m.kind {
 	case menuEnchanting:
 		s.enchant(tx, c, m, button)
@@ -218,6 +222,10 @@ func (s *Session) renameItem(tx *world.Tx, c session.Controllable, name string) 
 	st := s.items()
 	m := st.open.Load()
 	if m == nil || m.kind != menuAnvil {
+		return
+	}
+	if !s.menuStillValid(tx, c, m) {
+		s.closeMenu(tx, c, true)
 		return
 	}
 	// AnvilMenu.validateName: no control characters, at most 50 characters.
@@ -403,6 +411,11 @@ func grindResult(first, second item.Stack) item.Stack {
 	res := first
 	if first.Empty() {
 		res = second
+	}
+	if first.Empty() != second.Empty() && len(res.Enchantments()) == 0 {
+		// Vanilla: a single item without enchantments gives nothing (else renaming then
+		// grinding would wipe the prior-work penalty for free).
+		return item.Stack{}
 	}
 	if !first.Empty() && !second.Empty() {
 		n1, m1 := first.Item().EncodeItem()
@@ -627,6 +640,10 @@ func (s *Session) setBeacon(tx *world.Tx, c session.Controllable, primary, secon
 	st := s.items()
 	m := st.open.Load()
 	if m == nil || m.kind != menuBeacon {
+		return
+	}
+	if !s.menuStillValid(tx, c, m) {
+		s.closeMenu(tx, c, true)
 		return
 	}
 	beacon, ok := tx.Block(m.pos).(block.Beacon)

@@ -1,6 +1,8 @@
 package javasession
 
 import (
+	"time"
+
 	"github.com/df-mc/dragonfly/server/event"
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/item/inventory"
@@ -43,15 +45,35 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 		})
 	case v777.ServerboundPlaySetCreativeModeSlot:
 		slot := int(r.Int16())
-		st.in.DecodeUntrusted(r)
 		if r.Err != nil {
 			return true, r.Err
 		}
-		s.do(func(_ *world.Tx, c session.Controllable) { s.creativeSlot(c, slot, &st.in) })
+		if st.creative.Load() {
+			st.in.DecodeUntrusted(r)
+			if r.Err != nil {
+				return true, r.Err
+			}
+			s.do(func(_ *world.Tx, c session.Controllable) { s.creativeSlot(c, slot, &st.in) })
+			return true, nil
+		}
+		// Not creative in the player's latest transaction: the stack (whose text can be costly to
+		// decode) is only decoded if the game mode changed since.
+		s.do(func(_ *world.Tx, c session.Controllable) {
+			if !c.GameMode().CreativeInventory() {
+				s.sendInventory()
+				return
+			}
+			st.creative.Store(true)
+			st.in.DecodeUntrusted(r)
+			if r.Err == nil {
+				s.creativeSlot(c, slot, &st.in)
+			}
+		})
+		return true, r.Err
 	case v777.ServerboundPlayContainerClick:
 		var k click
 		window := r.VarInt()
-		r.VarInt() // state id: we resync after every click anyway
+		stateID := r.VarInt()
 		k.slot = int(r.Int16())
 		k.button = int(r.Int8())
 		k.mode = int(r.VarInt())
@@ -60,21 +82,16 @@ func (s *Session) handleInventoryPacket(id int32, body []byte) (handled bool, er
 			return true, jitem.ErrInvalid
 		}
 		var hs jitem.HashedStack
-		for range n {
-			r.Int16()
+		var changed [128]int16 // the slots the client changed (its prediction)
+		for i := range n {
+			changed[i] = r.Int16()
 			hs.Decode(r)
 		}
 		hs.Decode(r) // carried
 		if r.Err != nil {
 			return true, r.Err
 		}
-		s.do(func(tx *world.Tx, c session.Controllable) {
-			m := st.menu()
-			if window == m.id {
-				s.click(tx, c, m, k)
-			}
-			s.syncWindow(tx, c, m)
-		})
+		s.do(func(tx *world.Tx, c session.Controllable) { s.containerClick(tx, c, window, stateID, k, changed[:n]) })
 	case v777.ServerboundPlayContainerClose:
 		window := r.VarInt()
 		if r.Err != nil {
@@ -118,7 +135,11 @@ func (s *Session) dropHeldItem(c session.Controllable, all bool) {
 	if st.inv == nil {
 		return
 	}
-	slot := int(*st.heldSlot)
+	hs := st.heldSlot.Load()
+	if hs == nil {
+		return
+	}
+	slot := int(*hs)
 	it, _ := st.inv.Item(slot)
 	if it.Empty() {
 		return
@@ -154,13 +175,13 @@ func (s *Session) creativeSlot(c session.Controllable, slot int, js *jitem.Stack
 		s.sendInventory()
 		return
 	}
-	ds, ok := st.creativeStack(js)
-	if !ok {
-		s.sendInventory()
-		return
-	}
 	if slot == -1 {
-		if !ds.Empty() {
+		ds, _, ok := st.creativeStack(js, -1)
+		if !ok || ds.Empty() {
+			return
+		}
+		// Vanilla's dropSpamThrottler: creative drops spawn entities, so they are limited.
+		if st.drops.allow(time.Now()) {
 			c.Drop(ds)
 		}
 		return
@@ -169,23 +190,87 @@ func (s *Session) creativeSlot(c session.Controllable, slot int, js *jitem.Stack
 	if !ok || ref.inv == nil {
 		return
 	}
+	old, _ := ref.inv.Item(ref.idx)
+	// Was the last copy a move out of this slot? Then the old stack is in the copy's slot now.
+	moved := !old.Empty() && st.restoreClone(slot, old)
+	ds, src, ok := st.creativeStack(js, slot)
+	if !ok {
+		s.sendInventory()
+		return
+	}
 	if !ref.mayPlace(ds) {
 		s.sendSlot(slot, st.slotItem(slot))
 		return
 	}
-	if old, _ := ref.inv.Item(ref.idx); !old.Empty() {
-		copy(st.recent[:], st.recent[1:])
-		st.recent[len(st.recent)-1] = old
+	switch {
+	case moved:
+	case src == creativeSelf:
+		// The client took part of the stack (onto its cursor): that part may be put down again.
+		if old.Count() > ds.Count() {
+			st.remember(old.Grow(-ds.Count()))
+		}
+	case !old.Empty():
+		st.remember(old)
 	}
 	_ = ref.inv.SetItem(ref.idx, ds)
+	if src == creativeCopy {
+		st.clone.target, st.clone.stripped = slot, ds
+	}
 }
+
+// remember keeps a stack a creative client took out of a slot: it may come back in another slot.
+func (st *itemState) remember(it item.Stack) {
+	copy(st.recent[:], st.recent[1:])
+	st.recent[len(st.recent)-1] = it
+}
+
+// creativeClone is the last stack a creative client put down while the stack it matched was still
+// in another slot (src). That is a copy, so it was converted from its Java form, without the
+// Dragonfly-only data (plugin values, a shulker box's inventory). But the creative screen also
+// sends a shift-click move as "set the target" before "clear the source": clearing src right
+// after makes it a move, and the target gets the original back.
+type creativeClone struct {
+	target, src    int
+	orig, stripped item.Stack
+}
+
+// restoreClone is called when a creative client empties or replaces slot js that held old. If the
+// last copy was of exactly this stack and is still in its target slot, the copy was a move: the
+// target gets the original back (with the data that was stripped), and old is not remembered.
+func (st *itemState) restoreClone(js int, old item.Stack) bool {
+	cl := st.clone
+	st.clone = creativeClone{}
+	if cl.orig.Empty() || cl.src != js || !old.Equal(cl.orig) {
+		return false
+	}
+	ref, ok := st.playerRef(cl.target)
+	if !ok || ref.inv == nil {
+		return false
+	}
+	cur, _ := ref.inv.Item(ref.idx)
+	if cur.Empty() || !cur.Equal(cl.stripped) {
+		return false
+	}
+	_ = ref.inv.SetItem(ref.idx, cl.orig.Grow(cur.Count()-cl.orig.Count()))
+	return true
+}
+
+// Where creativeStack found the stack a creative client sent.
+const (
+	creativeNew  = iota // converted from the Java stack
+	creativeSelf        // the stack already in the target slot, at the same or a lower count
+	creativeMove        // a stack the client took out of a slot before
+	creativeCopy        // a copy of a stack that is still in another slot
+)
 
 // creativeStack turns a stack from a creative client into a Dragonfly stack. A stack the server
 // sent (moved around by the client) is matched to the original, so data Java items can't carry
-// (Dragonfly item values) survives; anything else is converted.
-func (st *itemState) creativeStack(js *jitem.Stack) (item.Stack, bool) {
+// (Dragonfly item values, a shulker box's inventory) survives a move; a copy of a stack that is
+// still in the inventory is converted from its Java form instead, like any new stack, so it carries
+// nothing a Bedrock creative player could not get either (and no shulker box shares an inventory).
+func (st *itemState) creativeStack(js *jitem.Stack, target int) (item.Stack, int, bool) {
 	if js.Empty() {
-		return item.Stack{}, true
+		return item.Stack{}, creativeNew, true
 	}
 	count := js.Count
 	js.Count = 1
@@ -203,23 +288,75 @@ func (st *itemState) creativeStack(js *jitem.Stack) (item.Stack, bool) {
 		conv.Encode(&got)
 		return string(got.B) == string(want.B)
 	}
-	try := func(ds item.Stack) (item.Stack, bool) {
-		if !match(ds) {
-			return item.Stack{}, false
-		}
-		return ds.Grow(max(1, min(int(count), ds.MaxCount())) - ds.Count()), true
-	}
-	for js := range playerSlots {
-		if ds, ok := try(st.slotItem(js)); ok {
-			return ds, true
+	n := max(1, int(count))
+	if target > 0 {
+		if ds := st.slotItem(target); match(ds) && n <= ds.Count() {
+			return ds.Grow(n - ds.Count()), creativeSelf, true
 		}
 	}
 	for i := len(st.recent) - 1; i >= 0; i-- {
-		if ds, ok := try(st.recent[i]); ok {
-			return ds, true
+		if ds := st.recent[i]; match(ds) && n <= ds.Count() {
+			// Taken from where it was: the rest stays there for a later slot.
+			st.recent[i] = ds.Grow(-n)
+			return ds.Grow(n - ds.Count()), creativeMove, true
 		}
 	}
-	return dragonflyStack(js)
+	for slot := 1; slot < playerSlots; slot++ {
+		if ds := st.slotItem(slot); slot != target && match(ds) {
+			out, ok := dragonflyStack(js)
+			if ok {
+				st.clone = creativeClone{src: slot, orig: ds}
+			}
+			return out, creativeCopy, ok
+		}
+	}
+	out, ok := dragonflyStack(js)
+	return out, creativeNew, ok
+}
+
+// dropThrottle is vanilla's dropSpamThrottler (TickThrottler(20, 1480)): each drop adds 20, each
+// tick takes 1 away, and drops stop at 1480 (a burst of 74, then one a second).
+type dropThrottle struct {
+	count float64
+	last  time.Time
+}
+
+func (d *dropThrottle) allow(now time.Time) bool {
+	if !d.last.IsZero() {
+		d.count = max(0, d.count-float64(now.Sub(d.last))/float64(50*time.Millisecond))
+	}
+	d.last = now
+	if d.count >= 1480 {
+		return false
+	}
+	d.count += 20
+	return true
+}
+
+// containerClick handles a container_click in window, which the client sent with state id stateID
+// and its prediction of the slots that changed.
+func (s *Session) containerClick(tx *world.Tx, c session.Controllable, window, stateID int32, k click, changed []int16) {
+	st := s.items()
+	m := st.menu()
+	if window != m.id {
+		s.syncWindow(tx, c, m)
+		return
+	}
+	if !s.menuStillValid(tx, c, m) {
+		// Vanilla ignores clicks in a window that is no longer valid (stillValid): the chest may
+		// have paired or unpaired since, and its old inventory must not be used.
+		s.closeMenu(tx, c, true)
+		return
+	}
+	// The client echoes the last state id it got: if it missed something, it gets the whole window
+	// again, else only what the click changed (vanilla broadcastChanges).
+	full := stateID != st.stateID.Load()
+	before := s.click(tx, c, m, k)
+	if full || before == nil {
+		s.syncWindow(tx, c, m)
+		return
+	}
+	s.syncClick(tx, c, m, before, changed)
 }
 
 // click is a container_click.
@@ -244,6 +381,9 @@ type view struct {
 	n     int // slots the client sees
 	total int // with the hidden off-hand of block windows
 	res   int // computed result slot, -1 if none
+	// creative is whether the player has infinite materials (vanilla hasInfiniteMaterials), read
+	// once per click from its game mode.
+	creative bool
 
 	refs   [maxWindow]slotRef
 	orig   [maxWindow]item.Stack
@@ -278,18 +418,21 @@ func (st *itemState) newView(tx *world.Tx, c session.Controllable, m *menu) *vie
 	v.slots = v.orig
 	v.ocur = st.cursor()
 	v.cursor = v.ocur
-	m.creative = c.GameMode().CreativeInventory()
+	v.creative = c.GameMode().CreativeInventory()
 	v.updateResult()
 	return v
 }
 
-func (s *Session) click(tx *world.Tx, c session.Controllable, m *menu, k click) {
+// click applies a container_click. It returns the window's slots as the client saw them before
+// (nil if nothing was done), for syncClick.
+func (s *Session) click(tx *world.Tx, c session.Controllable, m *menu, k click) *[maxWindow]item.Stack {
 	st := s.items()
 	if st.inv == nil {
-		return
+		return nil
 	}
 	v := st.newView(tx, c, m)
-	creative := m.creative
+	before := v.slots
+	creative := v.creative
 
 	if k.mode != clickQuickCraft {
 		st.drag = dragState{}
@@ -298,7 +441,7 @@ func (s *Session) click(tx *world.Tx, c session.Controllable, m *menu, k click) 
 	case clickPickup:
 		v.pickup(k.slot, k.button)
 	case clickQuickMove:
-		if v.valid(k.slot) && (k.button == 0 || k.button == 1) {
+		if v.valid(k.slot) && (k.button == 0 || k.button == 1) && v.mayPickup(k.slot) {
 			v.quickMove(k.slot)
 		}
 	case clickSwap:
@@ -316,6 +459,12 @@ func (s *Session) click(tx *world.Tx, c session.Controllable, m *menu, k click) 
 		v.pickupAll(k.slot, k.button)
 	}
 	v.commit()
+	return &before
+}
+
+// mayPickup reports whether the stack in slot js may be taken out (vanilla Slot.mayPickup).
+func (v *view) mayPickup(js int) bool {
+	return v.refs[js].mayPickup(v.slots[js], v.creative)
 }
 
 // valid reports whether js is a slot of the window.
@@ -361,6 +510,8 @@ func (v *view) pickup(js, button int) {
 			n = 1
 		}
 		v.insert(js, n)
+	case !v.mayPickup(js):
+		// Curse of Binding on worn armour (vanilla ArmorSlot.mayPickup): no taking, no swapping.
 	case cur.Empty():
 		n := it.Count()
 		if button == 1 {
@@ -380,6 +531,8 @@ func (v *view) pickup(js, button int) {
 		}
 	case it.Comparable(cur):
 		// A slot that takes nothing (furnace output): take all of it if it fits on the cursor.
+		// Vanilla's Slot.tryRemove does the same: allowModification is false for such a slot, so
+		// it refuses a limit below the slot's count instead of taking part of it.
 		if it.Count() <= cur.MaxCount()-cur.Count() {
 			v.cursor = cur.Grow(it.Count())
 			v.slots[js] = item.Stack{}
@@ -547,6 +700,9 @@ func (v *view) quickRoute(js int, it *item.Stack) bool {
 				return v.moveStack(it, a, a+1, false)
 			}
 		}
+		if _, shield := it.Item().(item.Shield); shield && v.slots[slotOffhand].Empty() {
+			return v.moveStack(it, slotOffhand, slotOffhand+1, false)
+		}
 		if js < slotOffhand {
 			return between()
 		}
@@ -693,6 +849,7 @@ func (v *view) swap(js, button int) {
 	r := &v.refs[js]
 	switch {
 	case src.Empty() && tgt.Empty():
+	case !tgt.Empty() && !v.mayPickup(js):
 	case src.Empty():
 		v.slots[hb], v.slots[js] = tgt, item.Stack{}
 	case !r.mayPlace(src):
@@ -712,7 +869,7 @@ func (v *view) swap(js, button int) {
 
 // throw is Q (button 0, one item) or Ctrl+Q (button 1, the stack) over a slot.
 func (v *view) throw(js, button int) {
-	if !v.cursor.Empty() || !v.valid(js) || v.slots[js].Empty() {
+	if !v.cursor.Empty() || !v.valid(js) || v.slots[js].Empty() || !v.mayPickup(js) {
 		return
 	}
 	if js == v.res {
@@ -750,6 +907,10 @@ func (v *view) quickCraft(k click, creative bool) {
 		}
 		d.active, d.kind, d.slots = true, kind, d.slots[:0]
 	case 1:
+		if d.kind == 2 && !creative {
+			*d = dragState{} // no longer creative: the drag ends here
+			return
+		}
 		if !d.active || kind != d.kind || !v.valid(k.slot) || len(d.slots) >= maxWindow {
 			return
 		}
@@ -770,7 +931,7 @@ func (v *view) quickCraft(k click, creative bool) {
 		slots, kind := d.slots, d.kind
 		active := d.active
 		*d = dragState{slots: slots[:0]}
-		if !active || len(slots) == 0 || v.cursor.Empty() {
+		if !active || len(slots) == 0 || v.cursor.Empty() || (kind == 2 && !creative) {
 			return
 		}
 		if len(slots) == 1 {
@@ -832,7 +993,7 @@ func (v *view) pickupAll(js, button int) {
 	for pass := 0; pass < 2 && cur.Count() < limit; pass++ {
 		for s := start; s >= 0 && s < v.n && cur.Count() < limit; s += step {
 			it := v.slots[s]
-			if v.refs[s].inv == nil || it.Empty() || !it.Comparable(cur) || (pass == 0 && it.Count() == it.MaxCount()) {
+			if v.refs[s].inv == nil || it.Empty() || !it.Comparable(cur) || (pass == 0 && it.Count() == it.MaxCount()) || !v.mayPickup(s) {
 				continue
 			}
 			n := min(it.Count(), limit-cur.Count())
@@ -874,6 +1035,23 @@ func (v *view) commit() {
 	if !changed || ctx.Cancelled() {
 		return
 	}
+	// The drops come first: a player handler may cancel one (Player.Drop returns how many it
+	// dropped), and what was not dropped goes back where it came from before anything is applied.
+	dropped := false
+	var lost []item.Stack
+	for _, d := range v.drops {
+		n := v.c.Drop(d.it)
+		dropped = dropped || n > 0
+		if n >= d.it.Count() {
+			continue
+		}
+		if rest := v.putBack(d.from, d.it.Grow(-n)); !rest.Empty() {
+			if !dropped {
+				return // nothing dropped and nowhere to put it: the click does nothing
+			}
+			lost = append(lost, rest)
+		}
+	}
 	smelted := v.m.kind == menuFurnace && v.slots[2].Count() < v.orig[2].Count()
 	st.applying.Store(true)
 	for js := range v.total {
@@ -885,10 +1063,11 @@ func (v *view) commit() {
 		_ = st.ui.SetItem(cursorUISlot, v.cursor)
 	}
 	st.applying.Store(false)
-	for _, d := range v.drops {
-		if n := v.c.Drop(d.it); n < d.it.Count() {
-			// A drop a player handler cancelled goes back into the inventory.
-			_, _ = st.inv.AddItem(d.it.Grow(-n))
+	for _, it := range lost {
+		// Only when one click drops several stacks and the handler cancels a later one with the
+		// inventory full: as close as it gets.
+		if n, err := st.inv.AddItem(it); err != nil && st.s.log != nil {
+			st.s.log.Debug("cancelled drop did not fit back", "item", it.Grow(n-it.Count()))
 		}
 	}
 	for _, f := range v.after {
@@ -897,6 +1076,39 @@ func (v *view) commit() {
 	if smelted {
 		v.furnaceExperience()
 	}
+}
+
+// putBack puts back the part of a drop that was not dropped: into the cursor or the slot it was
+// thrown from, or (results, overflow) into the inventory and then the cursor. It returns what did
+// not fit anywhere.
+func (v *view) putBack(from int, rest item.Stack) item.Stack {
+	merge := func(into *item.Stack, limit int) {
+		switch {
+		case rest.Empty():
+		case into.Empty():
+			n := min(rest.Count(), limit)
+			*into = rest.Grow(n - rest.Count())
+			rest = rest.Grow(-n)
+		case into.Comparable(rest):
+			n := min(rest.Count(), limit-into.Count())
+			if n > 0 {
+				*into = into.Grow(n)
+				rest = rest.Grow(-n)
+			}
+		}
+	}
+	switch {
+	case rest.Empty():
+	case from == cursorDrop:
+		merge(&v.cursor, rest.MaxCount())
+	case from >= 0:
+		merge(&v.slots[from], v.refs[from].maxIn(rest))
+	default:
+		if rest = v.addToInventory(rest); !rest.Empty() {
+			merge(&v.cursor, rest.MaxCount())
+		}
+	}
+	return rest
 }
 
 // takeAndPlace calls HandleTake and HandlePlace for a slot going from before to after.

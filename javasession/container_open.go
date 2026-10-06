@@ -10,6 +10,7 @@ import (
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	v777 "github.com/ezchr/go-mc/java/v777"
+	"github.com/ezchr/go-mc/java/wire"
 )
 
 // menu returns the open window (the player's inventory if no block window is open).
@@ -17,7 +18,7 @@ func (st *itemState) menu() *menu {
 	if m := st.open.Load(); m != nil {
 		return m
 	}
-	return playerMenu
+	return &st.player
 }
 
 // nextWindowID is vanilla's container counter: 1-100, then around again.
@@ -29,12 +30,12 @@ func (st *itemState) nextWindowID() int32 {
 // OpenBlockContainer opens the window of the block at pos (chests, furnaces, crafting tables...).
 func (s *Session) OpenBlockContainer(pos cube.Pos, tx *world.Tx) {
 	st := s.items()
-	if m := st.open.Load(); m != nil && m.pos == pos {
-		return
-	}
 	_, c := st.current()
 	if c == nil || st.inv == nil {
 		return
+	}
+	if m := st.open.Load(); m != nil && m.pos == pos && s.menuStillValid(tx, c, m) {
+		return // already open (a window that is no longer valid is replaced by a fresh one)
 	}
 	if _, _, ok := menuFor(tx.Block(pos)); !ok {
 		return
@@ -90,11 +91,23 @@ func (s *Session) closeMenu(tx *world.Tx, c session.Controllable, send bool) {
 		w.VarInt(m.id)
 		s.queue(v777.ClientboundPlayContainerClose, w)
 	}
-	var b world.Block
-	if tx.World() == m.w {
-		b = tx.Block(m.pos)
+	switch {
+	case tx.World() == m.w:
+		s.removeViewer(tx, m)
+	case m.w != nil:
+		// The player is in another world now: the block forgets the viewer in its own world (else
+		// the lid stays open and the block keeps the session).
+		m.w.Do(func(tx *world.Tx) { s.removeViewer(tx, m) })
 	}
-	switch b := b.(type) {
+	st.applying.Store(true)
+	c.MoveItemsToInventory()
+	st.applying.Store(false)
+	s.sendInventory()
+}
+
+// removeViewer tells the block of window m (in tx's world) that the session no longer views it.
+func (s *Session) removeViewer(tx *world.Tx, m *menu) {
+	switch b := tx.Block(m.pos).(type) {
 	case block.EnderChest:
 		if m.ender {
 			b.RemoveViewer(tx, m.pos)
@@ -102,10 +115,53 @@ func (s *Session) closeMenu(tx *world.Tx, c session.Controllable, send bool) {
 	case block.Container:
 		b.RemoveViewer(s, tx, m.pos)
 	}
-	st.applying.Store(true)
-	c.MoveItemsToInventory()
-	st.applying.Store(false)
-	s.sendInventory()
+}
+
+// menuStillValid is vanilla's stillValid for the open window, checked before every window action
+// (clicks, buttons, anvil names, beacons) and every few ticks: same world, the same kind of block
+// within 8 blocks and, for blocks with an inventory, still the same inventory. Dragonfly gives a
+// chest a new inventory when it pairs or unpairs, and the old one must not be used any more (it
+// still holds the items: taking them would duplicate them).
+func (s *Session) menuStillValid(tx *world.Tx, c session.Controllable, m *menu) bool {
+	if m.kind == menuPlayer {
+		return true
+	}
+	if tx.World() != m.w || c.Position().Sub(m.pos.Vec3Centre()).Len() > 8 {
+		return false
+	}
+	b := tx.Block(m.pos)
+	if reflect.TypeOf(b) != m.btype {
+		return false
+	}
+	switch {
+	case m.ender:
+		return m.inv == c.EnderChestInventory()
+	case m.inv != nil:
+		cb, ok := b.(block.Container)
+		return ok && cb.Inventory(tx, m.pos) == m.inv
+	}
+	return true
+}
+
+// closeWindows closes the open block window and puts the items of the UI inventory back. For the
+// world change (dimension.go switchWorld): the client closes its screen for the new world.
+func (s *Session) closeWindows(tx *world.Tx, c session.Controllable) {
+	s.closeMenu(tx, c, true)
+}
+
+// closeWindowsAfterRespawn closes the open block window once the player respawned (self.go
+// SendRespawn): the respawn packet took the client back to its own inventory, so the server must
+// not keep the block window open. It runs in a transaction of its own.
+func (s *Session) closeWindowsAfterRespawn() {
+	m := s.items().open.Load()
+	if m == nil {
+		return
+	}
+	go s.do(func(tx *world.Tx, c session.Controllable) {
+		if s.items().open.Load() == m {
+			s.closeMenu(tx, c, false)
+		}
+	})
 }
 
 // clientClosed handles container_close. Like vanilla, the window id hardly matters: whatever is
@@ -139,7 +195,7 @@ func (s *Session) checkMenu(tx *world.Tx, c session.Controllable) {
 		return
 	}
 	m.lastCheck = now
-	if tx.World() == m.w && reflect.TypeOf(tx.Block(m.pos)) == m.btype && c.Position().Sub(m.pos.Vec3Centre()).Len() <= 8 {
+	if s.menuStillValid(tx, c, m) {
 		return
 	}
 	// HandleInventories runs while the player entity is being opened: close in a transaction of its own.
@@ -172,6 +228,63 @@ func (s *Session) syncWindow(tx *world.Tx, c session.Controllable, m *menu) {
 	s.writeStack(w, v.cursor)
 	s.queue(v777.ClientboundPlayContainerSetContent, w)
 	s.syncMenuData(tx, c, m, v)
+}
+
+// syncClick sends what a click changed (vanilla broadcastChanges): the slots whose stack is not
+// what it was before the click, the slots the client changed itself (its prediction, right or
+// wrong), the cursor and the data slots that changed. A click costs a few bytes back, not the whole
+// window.
+func (s *Session) syncClick(tx *world.Tx, c session.Controllable, m *menu, before *[maxWindow]item.Stack, changed []int16) {
+	st := s.items()
+	if st.inv == nil {
+		return
+	}
+	v := st.newView(tx, c, m)
+	if v.total > v.n {
+		// The hidden off-hand of a block window (F) is slot 45 of window 0. First, so the last
+		// state id the client gets is the window's.
+		if off := m.offhand(); !s.sameStack(before[off], v.slots[off]) {
+			s.sendSlot(slotOffhand, v.slots[off])
+		}
+	}
+	var sent [maxWindow]bool
+	send := func(js int) {
+		if sent[js] {
+			return
+		}
+		sent[js] = true
+		if m.kind == menuPlayer {
+			s.sendSlot(js, v.slots[js])
+		} else {
+			s.sendWindowSlot(m.id, js, v.slots[js])
+		}
+	}
+	for js := range v.n {
+		if !s.sameStack(before[js], v.slots[js]) {
+			send(js)
+		}
+	}
+	for _, js := range changed {
+		if js >= 0 && int(js) < v.n {
+			send(int(js))
+		}
+	}
+	s.sendCursor(v.cursor)
+	s.syncMenuData(tx, c, m, v)
+}
+
+// sameStack reports whether a and b look the same to the client.
+func (s *Session) sameStack(a, b item.Stack) bool {
+	if a.Empty() || b.Empty() {
+		return a.Empty() == b.Empty()
+	}
+	if !a.Equal(b) {
+		return false
+	}
+	var wa, wb wire.Writer
+	s.writeStack(&wa, a)
+	s.writeStack(&wb, b)
+	return string(wa.B) == string(wb.B)
 }
 
 // syncMenuData sends the window's data slots (progress bars, costs) that changed, all of them the
@@ -322,7 +435,11 @@ func (s *Session) uiSlotChanged(slot int, it item.Stack) {
 // closeContainers is for Session.Close, before the player is saved: it closes the open window
 // without telling the client (the block forgets the viewer) and puts the items of the UI inventory
 // (crafting grid, station inputs, cursor) back into the inventory, as the Bedrock session does.
+//
+// The session's inventory state goes at the end (releaseItems): not before, or the window would
+// be lost and its items with it.
 func (s *Session) closeContainers(tx *world.Tx, c session.Controllable) {
+	defer s.releaseItems()
 	st := s.items()
 	if st.inv == nil || tx == nil || c == nil {
 		return

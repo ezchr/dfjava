@@ -248,8 +248,18 @@ func leatherTier(t item.ArmourTier, js *jitem.Stack) item.ArmourTier {
 	return t
 }
 
+// Limits on what a creative client makes: Bedrock creative players in Dragonfly only get items from
+// the creative inventory, so a Java creative client gets those plus a bounded name and lore
+// (vanilla: lore up to 256 lines; the anvil names up to 50 characters).
+const (
+	maxCreativeName      = 64
+	maxCreativeLore      = 16
+	maxCreativeLoreChars = 128
+)
+
 // dragonflyStack converts a Java stack (sent by a creative client) to a Dragonfly stack. ok is false
-// for items Dragonfly does not have.
+// for items Dragonfly does not have. Names and lore are cut to the creative limits, enchantment
+// levels to the enchantment's maximum, and unbreakable is not taken.
 func dragonflyStack(js *jitem.Stack) (item.Stack, bool) {
 	if js.Empty() {
 		return item.Stack{}, true
@@ -291,16 +301,13 @@ func dragonflyStack(js *jitem.Stack) (item.Stack, bool) {
 			ds = ds.WithDurability(max(1, md-int(js.Damage)))
 		}
 	}
-	if js.Has(jitem.CompUnbreakable) {
-		ds = ds.AsUnbreakable()
-	}
 	if js.Has(jitem.CompCustomName) && js.CustomName.Text != "" {
-		ds = ds.WithCustomName(js.CustomName.Text)
+		ds = ds.WithCustomName(cutRunes(js.CustomName.Text, maxCreativeName))
 	}
 	if js.Has(jitem.CompLore) && len(js.Lore) > 0 {
-		lines := make([]string, len(js.Lore))
-		for i, l := range js.Lore {
-			lines[i] = l.Text
+		lines := make([]string, min(len(js.Lore), maxCreativeLore))
+		for i := range lines {
+			lines[i] = cutRunes(js.Lore[i].Text, maxCreativeLoreChars)
 		}
 		ds = ds.WithLore(lines...)
 	}
@@ -313,10 +320,25 @@ func dragonflyStack(js *jitem.Stack) (item.Stack, bool) {
 		es := make([]item.Enchantment, 0, len(ench))
 		for _, e := range ench {
 			if et, ok := t.fromJava[e.ID]; ok && e.Level > 0 {
-				es = append(es, item.NewEnchantment(et, int(min(e.Level, 255))))
+				es = append(es, item.NewEnchantment(et, min(int(e.Level), max(1, et.MaxLevel()))))
 			}
 		}
 		ds = ds.WithEnchantments(es...)
 	}
 	return ds, true
+}
+
+// cutRunes cuts s to at most n characters.
+func cutRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := 0
+	for j := range s {
+		if i == n {
+			return s[:j]
+		}
+		i++
+	}
+	return s
 }
