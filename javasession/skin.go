@@ -21,8 +21,13 @@ import (
 	"github.com/google/uuid"
 )
 
-//go:embed skins/steve.png
+//go:embed skins/steve.png skins/geo.json
 var skinFS embed.FS
+
+// humanoidGeometry is the classic player model (geometry.humanoid.custom and customSlim), from
+// Geyser (MIT): Bedrock clients only draw a skin a server sends with its geometry data, not
+// with the model name alone (Dragonfly sends "{}" for a skin without a model).
+var humanoidGeometry, _ = skinFS.ReadFile("skins/geo.json")
 
 // Bedrock players see a Java player with the skin their Java profile names (downloaded from
 // Mojang's texture server), or Steve. A Dragonfly skin with no pixels would make them invisible.
@@ -126,6 +131,8 @@ func bedrockSkin(img image.Image, slim bool) skin.Skin {
 		s.ArmSize = "slim"
 		s.ModelConfig = skin.ModelConfig{Default: "geometry.humanoid.customSlim"}
 	}
+	s.Model = humanoidGeometry
+	s.Premium = true // as Geyser sends Java skins
 	id := uuid.New().String()
 	s.SkinID = id
 	s.FullID = id

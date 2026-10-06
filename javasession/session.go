@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/dragonfly/server/player/chat"
 	"github.com/df-mc/dragonfly/server/player/skin"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
@@ -43,6 +44,9 @@ type Session struct {
 
 	ent     *world.EntityHandle
 	onClose func(*world.Tx, session.Controllable)
+
+	joinMessage chat.Translation
+	quitMessage chat.Translation
 
 	tabs        *tabList
 	tab         tabState
@@ -272,6 +276,9 @@ func (s *Session) cleanup() {
 // remove the player entity from the world (a player with a session is removed by the session).
 func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 	s.closeOnce.Do(func() {
+		if s.spawned.Load() && !s.quitMessage.Zero() {
+			chat.Global.Writet(s.quitMessage, s.jp.Profile.Name)
+		}
 		s.closeContainers(tx, c)
 		if s.onClose != nil {
 			s.onClose(tx, c)
@@ -311,6 +318,9 @@ func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.loader.Move(tx, pos)
 	s.sendCentre(pos)
 	s.showSelfTab(s.jp.Profile.Name, gameModeID(c.GameMode()))
+	if !s.joinMessage.Zero() {
+		chat.Global.Writet(s.joinMessage, s.jp.Profile.Name)
+	}
 	if s.tabs != nil {
 		s.tabs.add(s)
 	}

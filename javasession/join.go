@@ -7,6 +7,7 @@ import (
 
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/player"
+	"github.com/df-mc/dragonfly/server/player/chat"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	jserver "github.com/ezchr/go-mcjava/server"
@@ -28,6 +29,10 @@ type Config struct {
 	// Identity gives a Java player their Dragonfly UUID and XUID (ViaBedrockIdentity if nil, which
 	// keeps the data of players who joined through ViaProxy).
 	Identity Identity
+	// JoinMessage and QuitMessage are announced in chat when a Java player joins and leaves, as
+	// Dragonfly does for Bedrock players (pass the server's Config.JoinMessage/QuitMessage).
+	// Zero values announce nothing.
+	JoinMessage, QuitMessage chat.Translation
 	// Allow, if set, is asked before a Java player joins; a non-empty reason refuses them.
 	Allow func(p jserver.Profile, id uuid.UUID, xuid string) (reason string)
 }
@@ -81,6 +86,7 @@ func join(conf Config, tabs *tabList, jp *jserver.Player) {
 	s := newSession(jp, radius, conf.Log)
 	s.id = id
 	s.tabs = tabs
+	s.joinMessage, s.quitMessage = conf.JoinMessage, conf.QuitMessage
 	s.xuid, s.skin = xuid, pc.Skin
 	registerProfile(id, jp.Profile.Properties)
 	s.sendLogin(pc, w)
