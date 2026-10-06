@@ -86,7 +86,10 @@ type Session struct {
 	pendingTeleport atomic.Int32
 
 	latency   atomic.Int64 // round trip in nanoseconds, smoothed like vanilla; 0 until measured
-	keepAlive atomic.Int64 // id (send time in Unix nanoseconds) of the keep-alive we're waiting on, 0 if none
+	keepAlive atomic.Int64 // id (queue time in Unix nanoseconds) of the keep-alive we're waiting on, 0 if none
+	// keepAliveSent is when the pending keep-alive was written to the socket (Unix nanoseconds):
+	// the round trip is timed from there, not from the queue, which waits up to flushDelay.
+	keepAliveSent atomic.Int64
 
 	outMu  sync.Mutex
 	out    []outPacket
@@ -187,6 +190,10 @@ func (s *Session) writeLoop() {
 			var err error
 			if id := s.ver.ClientboundPlay(p.id); id >= 0 { // -1: the client's version has no such packet
 				err = s.conn.WritePacket(id, p.w.B)
+				if p.id == v777.ClientboundPlayKeepAlive {
+					// Written now; flushed with the batch right after.
+					s.keepAliveSent.Store(time.Now().UnixNano())
+				}
 			}
 			if cap(p.w.B) <= 1<<16 { // don't keep huge chunk buffers around
 				s.writers.Put(p.w)

@@ -21,7 +21,11 @@ func (s *Session) handle(id int32, body []byte) error {
 		if ka := r.Int64(); ka != 0 && s.keepAlive.CompareAndSwap(ka, 0) {
 			// The whole round trip, smoothed like vanilla (3/4 old, 1/4 new; the first
 			// measurement as it is).
-			rtt := int64(min(time.Duration(time.Now().UnixNano()-ka), time.Minute))
+			sent := ka
+			if t := s.keepAliveSent.Load(); t > ka {
+				sent = t // when it left the server, not when it was queued
+			}
+			rtt := int64(min(time.Duration(time.Now().UnixNano()-sent), time.Minute))
 			if old := s.latency.Load(); old != 0 {
 				rtt = (old*3 + rtt) / 4
 			}
