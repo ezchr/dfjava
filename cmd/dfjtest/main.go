@@ -29,6 +29,7 @@ func main() {
 	radius := flag.Int("radius", 6, "chunk radius")
 	pprofAddr := flag.String("pprof", "", "serve net/http/pprof on this address (for profiling)")
 	spawnTest := flag.Bool("spawntest", false, "spawn test entities (TNT, falling sand, xp orbs, an item) near each joining player")
+	noAuth := flag.Bool("noauth", false, "let Bedrock clients join without Xbox authentication (for test bots)")
 	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
 	if *pprofAddr != "" {
@@ -40,6 +41,7 @@ func main() {
 	uc.Network.Address = *bedrockAddr
 	uc.World.Folder = *folder
 	uc.Players.SaveData = false
+	uc.Server.AuthEnabled = !*noAuth
 	conf, err := uc.Config(log)
 	if err != nil {
 		log.Error("config", "err", err)

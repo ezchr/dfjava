@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/dragonfly/server/player/skin"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	jchunk "github.com/ezchr/go-mc/java/chunk"
@@ -29,6 +30,9 @@ type Session struct {
 	log  *slog.Logger
 	jp   *server.Player
 	id   uuid.UUID // the player's Dragonfly UUID (see Identity)
+	xuid string
+	skin skin.Skin
+	peer *session.Peer // how Bedrock clients list this player
 	conn *wire.Conn
 
 	ent     *world.EntityHandle
@@ -213,6 +217,9 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 		}
 		s.CloseConnection()
 		forgetProfile(s.id)
+		if s.peer != nil {
+			session.RemovePeer(s.peer)
+		}
 		s.entMu.Lock()
 		clear(s.entityIDs)
 		s.entMu.Unlock()

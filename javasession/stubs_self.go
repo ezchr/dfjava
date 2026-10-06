@@ -9,7 +9,6 @@ import (
 	"github.com/df-mc/dragonfly/server/player/debug"
 	"github.com/df-mc/dragonfly/server/player/hud"
 	"github.com/df-mc/dragonfly/server/player/input"
-	"github.com/df-mc/dragonfly/server/player/skin"
 	"github.com/df-mc/dragonfly/server/world"
 )
 
@@ -30,7 +29,6 @@ func (*Session) RemoveViewLayer(_ world.Entity)                         {}
 func (*Session) SendDebugShapes(_ world.Dimension)                      {}
 func (*Session) SendHudUpdates()                                        {}
 func (*Session) SendInputLocks()                                        {}
-func (*Session) SetHandle(_ *world.EntityHandle, _ skin.Skin)           {}
 func (*Session) ShowHudElement(_ hud.Element)                           {}
 func (*Session) StartShowingEntity(_ world.Entity)                      {}
 func (*Session) StopShowingEntity(_ world.Entity)                       {}

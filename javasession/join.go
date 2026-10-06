@@ -6,7 +6,6 @@ import (
 
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/player"
-	"github.com/df-mc/dragonfly/server/player/skin"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
 	jserver "github.com/ezchr/go-mc/java/server"
@@ -71,7 +70,7 @@ func join(conf Config, jp *jserver.Player) {
 	pc.UUID = id
 	pc.XUID = xuid
 	pc.Locale, _ = language.Parse(strings.ReplaceAll(jp.Info.Locale, "_", "-"))
-	pc.Skin = skin.New(64, 64)
+	pc.Skin = javaSkin(jp.Profile.Properties)
 
 	radius := int32(conf.ChunkRadius)
 	if v := int32(jp.Info.ViewDistance); v > 1 && v < radius {
@@ -79,6 +78,7 @@ func join(conf Config, jp *jserver.Player) {
 	}
 	s := newSession(jp, radius, conf.Log)
 	s.id = id
+	s.xuid, s.skin = xuid, pc.Skin
 	registerProfile(id, jp.Profile.Properties)
 	s.sendLogin(pc, w)
 	if err := conf.Server.AddPlayer(s, pc, w); err != nil {
