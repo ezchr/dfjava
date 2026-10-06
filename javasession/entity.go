@@ -12,6 +12,9 @@ import (
 	"github.com/go-gl/mathgl/mgl64"
 )
 
+// damageGeneric is minecraft:generic in the damage_type registry.
+var damageGeneric = v777.RegistryID("minecraft:damage_type", "minecraft:generic")
+
 // Java entity type ids (minecraft:entity_type protocol ids in Mojang's registries.json).
 const entityTypePlayer = 159
 
@@ -307,10 +310,14 @@ func (s *Session) ViewEntityAction(e world.Entity, a world.EntityAction) {
 		w.VarInt(6) // duration in ticks (SwingAnimation.DEFAULT)
 		s.queue(v777.ClientboundPlaySwingAnimation, w)
 	case entity.HurtAction:
+		// damage_event makes the client play both the hurt animation and the entity's hurt sound.
 		w := s.packet()
 		w.VarInt(id)
-		w.Float32(float32(e.Rotation().Yaw()))
-		s.queue(v777.ClientboundPlayHurtAnimation, w)
+		w.VarInt(damageGeneric)
+		w.VarInt(0) // no cause entity
+		w.VarInt(0) // no direct entity
+		w.Bool(false)
+		s.queue(v777.ClientboundPlayDamageEvent, w)
 	case entity.CriticalHitAction:
 		s.animate(id, 1) // CRITICAL_HIT
 	case entity.EnchantedHitAction:
