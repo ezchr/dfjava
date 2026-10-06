@@ -28,6 +28,7 @@ import (
 type Session struct {
 	log  *slog.Logger
 	jp   *server.Player
+	id   uuid.UUID // the player's Dragonfly UUID (see Identity)
 	conn *wire.Conn
 
 	ent     *world.EntityHandle
@@ -211,7 +212,7 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 			}
 		}
 		s.CloseConnection()
-		forgetProfile(uuid.UUID(s.jp.Profile.UUID))
+		forgetProfile(s.id)
 		s.entMu.Lock()
 		clear(s.entityIDs)
 		s.entMu.Unlock()

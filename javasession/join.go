@@ -11,6 +11,7 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	jserver "github.com/ezchr/go-mc/java/server"
 	v777 "github.com/ezchr/go-mc/java/v777"
+	"github.com/ezchr/go-mc/java/wire"
 	"github.com/google/uuid"
 	"golang.org/x/text/language"
 )
@@ -24,6 +25,11 @@ type Config struct {
 	// ChunkRadius is the view distance in chunks (the client's own is used if smaller).
 	ChunkRadius int
 	Log         *slog.Logger
+	// Identity gives a Java player their Dragonfly UUID and XUID (ViaBedrockIdentity if nil, which
+	// keeps the data of players who joined through ViaProxy).
+	Identity Identity
+	// Allow, if set, is asked before a Java player joins; a non-empty reason refuses them.
+	Allow func(p jserver.Profile, id uuid.UUID, xuid string) (reason string)
 }
 
 // Run adds every Java client the listener accepts to the server. It returns when the listener is
@@ -45,11 +51,25 @@ func Run(conf Config) {
 }
 
 func join(conf Config, jp *jserver.Player) {
-	id := uuid.UUID(jp.Profile.UUID)
+	identity := conf.Identity
+	if identity == nil {
+		identity = ViaBedrockIdentity
+	}
+	id, xuid := identity(jp.Profile)
+	if conf.Allow != nil {
+		if reason := conf.Allow(jp.Profile, id, xuid); reason != "" {
+			conf.Log.Info("refused java login", "name", jp.Profile.Name, "xuid", xuid, "reason", reason)
+			var w wire.Writer
+			jserver.TextComponent(&w, reason)
+			jp.Conn.Send(v777.ClientboundPlayDisconnect, w.B)
+			jp.Conn.Close()
+			return
+		}
+	}
 	pc, w := conf.Server.LoadPlayer(id)
 	pc.Name = jp.Profile.Name
 	pc.UUID = id
-	pc.XUID = "" // Java players have no Xbox identity
+	pc.XUID = xuid
 	pc.Locale, _ = language.Parse(strings.ReplaceAll(jp.Info.Locale, "_", "-"))
 	pc.Skin = skin.New(64, 64)
 
@@ -58,6 +78,7 @@ func join(conf Config, jp *jserver.Player) {
 		radius = v
 	}
 	s := newSession(jp, radius, conf.Log)
+	s.id = id
 	registerProfile(id, jp.Profile.Properties)
 	s.sendLogin(pc, w)
 	if err := conf.Server.AddPlayer(s, pc, w); err != nil {
