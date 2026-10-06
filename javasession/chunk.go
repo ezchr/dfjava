@@ -1,0 +1,181 @@
+package javasession
+
+import (
+	"sync"
+
+	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
+	jchunk "github.com/ezchr/go-mc/java/chunk"
+	v777 "github.com/ezchr/go-mc/java/v777"
+)
+
+// blockInfo is what chunk encoding needs per Dragonfly block runtime id.
+type blockInfo struct {
+	java  []uint32 // Java block state id
+	air   []bool   // counts as air (not counted in a section's block count)
+	fluid []bool   // has a fluid (counted in a section's fluid count)
+}
+
+var (
+	infoOnce sync.Once
+	info     blockInfo
+	encoder  = jchunk.NewEncoder(jchunk.VanillaBlockStates, jchunk.VanillaBiomes)
+	encMu    sync.Mutex // the encoder keeps scratch buffers
+)
+
+func blocks() *blockInfo {
+	infoOnce.Do(func() { info = buildBlockInfo() })
+	return &info
+}
+
+// chunkState is per-session chunk sending state.
+type chunkState struct {
+	inBatch int // chunks queued in the batch being built this tick
+}
+
+// sendChunkBatch loads chunks around the player as one batch, at most the rate the client asked
+// for, with at most one batch waiting for the client's acknowledgement.
+func (s *Session) sendChunkBatch(tx *world.Tx) {
+	if s.batchInFlight.Load() {
+		return
+	}
+	n := int(s.chunkRate.Load() / 1000)
+	if n < 1 {
+		n = 1
+	}
+	s.chunks.inBatch = 0
+	s.loader.Load(tx, n)
+	if s.chunks.inBatch > 0 {
+		p := s.packet()
+		p.VarInt(int32(s.chunks.inBatch))
+		s.queue(v777.ClientboundPlayChunkBatchFinished, p)
+		s.batchInFlight.Store(true)
+		s.chunks.inBatch = 0
+	}
+}
+
+// ViewChunk encodes a chunk the loader made available.
+func (s *Session) ViewChunk(pos world.ChunkPos, dim world.Dimension, blockEntities map[cube.Pos]world.Block, c *chunk.Chunk) {
+	if s.chunks.inBatch == 0 {
+		s.queue(v777.ClientboundPlayChunkBatchStart, s.packet())
+	}
+	s.chunks.inBatch++
+	p := s.packet()
+	col := s.column(pos, c)
+	encMu.Lock()
+	err := encoder.Encode(p, col)
+	encMu.Unlock()
+	if err != nil {
+		s.log.Error("encode chunk", "pos", pos, "err", err)
+		return
+	}
+	s.queue(v777.ClientboundPlayLevelChunkWithLight, p)
+}
+
+// column converts a Dragonfly chunk. The Column is reused per session.
+func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
+	bi := blocks()
+	col := &s.col
+	col.X, col.Z = pos[0], pos[1]
+	subs := c.Sub()
+	r := c.Range()
+	if len(col.Sections) != len(subs) {
+		col.Sections = make([]jchunk.Section, len(subs))
+		col.SkyLight = make([]jchunk.Light, len(subs)+2)
+		col.BlockLight = make([]jchunk.Light, len(subs)+2)
+		for i := range col.SkyLight {
+			col.SkyLight[i].Data = make([]byte, 2048)
+			col.BlockLight[i].Data = make([]byte, 2048)
+		}
+	}
+	var heights [256]uint16
+	for i, sub := range subs {
+		sec := &col.Sections[i]
+		sec.BlockLayout, sec.BiomeLayout = nil, nil
+		baseY := r[0] + i*16
+		var nonAir, fluid int16
+		if sub.Empty() {
+			air := bi.java[airRID()]
+			for j := range sec.Blocks {
+				sec.Blocks[j] = air
+			}
+		} else {
+			layer := sub.Layer(0)
+			var water *chunk.PalettedStorage
+			if len(sub.Layers()) > 1 {
+				water = sub.Layer(1)
+			}
+			for y := byte(0); y < 16; y++ {
+				for z := byte(0); z < 16; z++ {
+					for x := byte(0); x < 16; x++ {
+						rid := layer.At(x, y, z)
+						sec.Blocks[jchunk.BlockIndex(int(x), int(y), int(z))] = bi.java[rid]
+						if !bi.air[rid] {
+							nonAir++
+							h := uint16(baseY + int(y) - r[0] + 1)
+							if h > heights[int(z)<<4|int(x)] {
+								heights[int(z)<<4|int(x)] = h
+							}
+						}
+						if bi.fluid[rid] || (water != nil && bi.fluid[water.At(x, y, z)]) {
+							fluid++
+						}
+					}
+				}
+			}
+		}
+		sec.BlockCount, sec.FluidCount = nonAir, fluid
+		for y := 0; y < 4; y++ {
+			for z := 0; z < 4; z++ {
+				for x := 0; x < 4; x++ {
+					b := c.Biome(uint8(x*4+2), int16(baseY+y*4+2), uint8(z*4+2))
+					sec.Biomes[jchunk.BiomeIndex(x, y, z)] = biomeID(b)
+				}
+			}
+		}
+		fillLight(&col.SkyLight[i+1], sub.SkyLight)
+		fillLight(&col.BlockLight[i+1], sub.BlockLight)
+	}
+	// Below the world: nothing. Above it: full sky light.
+	col.SkyLight[0].State, col.BlockLight[0].State = jchunk.LightAbsent, jchunk.LightAbsent
+	top := len(subs) + 1
+	col.SkyLight[top].State = jchunk.LightData
+	for i := range col.SkyLight[top].Data {
+		col.SkyLight[top].Data[i] = 0xff
+	}
+	col.BlockLight[top].State = jchunk.LightAbsent
+
+	bits := r.Height()
+	data := jchunk.PackHeightmap(s.hm[0][:0], &heights, bits)
+	s.hm[0] = data
+	col.Heightmaps = append(col.Heightmaps[:0],
+		jchunk.Heightmap{Type: jchunk.WorldSurface, Data: data},
+		jchunk.Heightmap{Type: jchunk.MotionBlocking, Data: data},
+		jchunk.Heightmap{Type: jchunk.MotionBlockingNoLeaves, Data: data},
+	)
+	col.BlockEntities = col.BlockEntities[:0]
+	return col
+}
+
+// fillLight copies a sub chunk's light into a Java nibble array.
+func fillLight(l *jchunk.Light, get func(x, y, z byte) uint8) {
+	l.State = jchunk.LightData
+	d := l.Data
+	for y := byte(0); y < 16; y++ {
+		for z := byte(0); z < 16; z++ {
+			for x := byte(0); x < 16; x += 2 {
+				i := jchunk.BlockIndex(int(x), int(y), int(z))
+				d[i>>1] = get(x, y, z)&0xf | get(x+1, y, z)<<4
+			}
+		}
+	}
+}
+
+// biomeID is the Java registry id of a Dragonfly biome id (plains if unknown).
+func biomeID(b uint32) uint32 {
+	if id, ok := biomeTable()[b]; ok {
+		return id
+	}
+	return uint32(v777.RegistryID("minecraft:worldgen/biome", "minecraft:plains"))
+}
