@@ -57,8 +57,15 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		}
 		pos := cube.Pos{x, y, z}
 		s.do(func(tx *world.Tx, c session.Controllable) {
+			// Bedrock clients drive the breaking animation with start/continue/stop and send the
+			// actual break separately (Dragonfly's BreakBlock). A Java client breaks instantly in
+			// creative on START, and in survival says STOP when it finished breaking.
 			switch action {
 			case actionStartDestroy:
+				if c.GameMode().CreativeInventory() {
+					c.BreakBlock(pos)
+					return
+				}
 				c.StartBreaking(pos, face)
 				s.input.breaking, s.input.breakFace = true, face
 			case actionAbortDestroy:
@@ -66,6 +73,7 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 				s.input.breaking = false
 			case actionStopDestroy:
 				c.FinishBreaking()
+				c.BreakBlock(pos)
 				s.input.breaking = false
 			case actionReleaseUseItem:
 				c.ReleaseItem()
