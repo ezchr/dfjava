@@ -12,9 +12,10 @@ import (
 
 // blockInfo is what chunk encoding needs per Dragonfly block runtime id.
 type blockInfo struct {
-	java  []uint32 // Java block state id
-	air   []bool   // counts as air (not counted in a section's block count)
-	fluid []bool   // has a fluid (counted in a section's fluid count)
+	java        []uint32 // Java block state id
+	waterlogged []uint32 // Java state when the block's second layer holds water
+	air         []bool   // counts as air (not counted in a section's block count)
+	fluid       []bool   // has a fluid (counted in a section's fluid count)
 }
 
 var (
@@ -110,7 +111,12 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 				for z := byte(0); z < 16; z++ {
 					for x := byte(0); x < 16; x++ {
 						rid := layer.At(x, y, z)
-						sec.Blocks[jchunk.BlockIndex(int(x), int(y), int(z))] = bi.java[rid]
+						state := bi.java[rid]
+						wet := water != nil && bi.fluid[water.At(x, y, z)]
+						if wet {
+							state = bi.waterlogged[rid]
+						}
+						sec.Blocks[jchunk.BlockIndex(int(x), int(y), int(z))] = state
 						if !bi.air[rid] {
 							nonAir++
 							h := uint16(baseY + int(y) - r[0] + 1)
@@ -118,7 +124,7 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 								heights[int(z)<<4|int(x)] = h
 							}
 						}
-						if bi.fluid[rid] || (water != nil && bi.fluid[water.At(x, y, z)]) {
+						if bi.fluid[rid] || wet {
 							fluid++
 						}
 					}
@@ -170,12 +176,4 @@ func fillLight(l *jchunk.Light, get func(x, y, z byte) uint8) {
 			}
 		}
 	}
-}
-
-// biomeID is the Java registry id of a Dragonfly biome id (plains if unknown).
-func biomeID(b uint32) uint32 {
-	if id, ok := biomeTable()[b]; ok {
-		return id
-	}
-	return uint32(v777.RegistryID("minecraft:worldgen/biome", "minecraft:plains"))
 }
