@@ -88,10 +88,14 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 	col.X, col.Z = pos[0], pos[1]
 	subs := c.Sub()
 	r := c.Range()
-	if len(col.Sections) != len(subs) {
-		col.Sections = make([]jchunk.Section, len(subs))
-		col.SkyLight = make([]jchunk.Light, len(subs)+2)
-		col.BlockLight = make([]jchunk.Light, len(subs)+2)
+	n := dimSections(s.dim)
+	if len(subs) > n {
+		subs = subs[:n]
+	}
+	if len(col.Sections) != n {
+		col.Sections = make([]jchunk.Section, n)
+		col.SkyLight = make([]jchunk.Light, n+2)
+		col.BlockLight = make([]jchunk.Light, n+2)
 		for i := range col.SkyLight {
 			col.SkyLight[i].Data = make([]byte, 2048)
 			col.BlockLight[i].Data = make([]byte, 2048)
@@ -150,16 +154,23 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 		fillLight(&col.SkyLight[i+1], sub.SkyLight)
 		fillLight(&col.BlockLight[i+1], sub.BlockLight)
 	}
+	// Sections the Java dimension has above Dragonfly's world (the nether): empty air.
+	for i := len(subs); i < n; i++ {
+		sec := &col.Sections[i]
+		sec.Fill(bi.java[airRID()], col.Sections[max(len(subs)-1, 0)].Biomes[0])
+		sec.BlockCount, sec.FluidCount = 0, 0
+		col.SkyLight[i+1].State, col.BlockLight[i+1].State = jchunk.LightAbsent, jchunk.LightAbsent
+	}
 	// Below the world: nothing. Above it: full sky light.
 	col.SkyLight[0].State, col.BlockLight[0].State = jchunk.LightAbsent, jchunk.LightAbsent
-	top := len(subs) + 1
+	top := n + 1
 	col.SkyLight[top].State = jchunk.LightData
 	for i := range col.SkyLight[top].Data {
 		col.SkyLight[top].Data[i] = 0xff
 	}
 	col.BlockLight[top].State = jchunk.LightAbsent
 
-	bits := r.Height()
+	bits := n * 16
 	data := jchunk.PackHeightmap(s.hm[0][:0], &heights, bits)
 	s.hm[0] = data
 	col.Heightmaps = append(col.Heightmaps[:0],

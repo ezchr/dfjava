@@ -29,6 +29,7 @@ func main() {
 	radius := flag.Int("radius", 6, "chunk radius")
 	pprofAddr := flag.String("pprof", "", "serve net/http/pprof on this address (for profiling)")
 	spawnTest := flag.Bool("spawntest", false, "spawn test entities (TNT, falling sand, xp orbs, an item) near each joining player")
+	netherTest := flag.Bool("nethertest", false, "move each joining player to the nether after 10 s")
 	noAuth := flag.Bool("noauth", false, "let Bedrock clients join without Xbox authentication (for test bots)")
 	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
@@ -74,6 +75,23 @@ func main() {
 
 	for p := range srv.Accept() {
 		log.Info("player in world", "name", p.Name(), "pos", p.Position())
+		if *netherTest {
+			h := p.H()
+			go func() {
+				time.Sleep(10 * time.Second)
+				srv.World().Do(func(tx *world.Tx) {
+					e, ok := h.Entity(tx)
+					if !ok {
+						return
+					}
+					handle := tx.RemoveEntity(e)
+					srv.Nether().Do(func(tx *world.Tx) {
+						tx.AddEntityAt(handle, mgl64.Vec3{0.5, 10, 0.5})
+						log.Info("moved to the nether", "name", p.Name())
+					})
+				})
+			}()
+		}
 		if *spawnTest {
 			tx := p.Tx()
 			at := p.Position().Add(mgl64.Vec3{3, 2, 0})

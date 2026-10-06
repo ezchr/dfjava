@@ -278,6 +278,9 @@ func (s *Session) tickLoop() {
 			s.queue(v777.ClientboundPlayKeepAlive, w)
 		case <-t.C:
 			err := s.withPlayer(func(tx *world.Tx, c session.Controllable) {
+				if w := tx.World(); w != s.loader.World() {
+					s.switchWorld(tx, w, c)
+				}
 				pos := c.Position()
 				s.loader.Move(tx, pos)
 				s.sendCentre(pos)

@@ -86,20 +86,7 @@ func (s *Session) SendAbilities(c session.Controllable) {
 // in the same dimension the client keeps its chunks. (Dimension changes are TODO: the loader has to
 // change worlds and resend chunks.)
 func (s *Session) SendRespawn(pos mgl64.Vec3, c session.Controllable) {
-	dim := s.dim
-	w := s.packet()
-	w.VarInt(v777.RegistryID("minecraft:dimension_type", dim))
-	w.String(dim)
-	w.Int64(0)
-	w.VarInt(gameModeID(c.GameMode()))
-	w.VarInt(0)
-	w.Bool(false)
-	w.Bool(false)
-	w.Bool(false) // no death location
-	w.VarInt(0)
-	w.VarInt(63)
-	w.Byte(0) // keep nothing: the server resends attributes and metadata
-	s.queue(v777.ClientboundPlayRespawn, w)
+	s.writeRespawn(s.dim, c, 0)
 	s.resendInventory()
 	rot := c.Rotation()
 	s.teleport(pos[0], pos[1], pos[2], float32(rot.Yaw()), float32(rot.Pitch()))
