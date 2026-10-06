@@ -19,7 +19,13 @@ func (s *Session) handle(id int32, body []byte) error {
 	case v777.ServerboundPlayKeepAlive:
 		// Only the keep-alive we are waiting for counts (ids are send times in nanoseconds).
 		if ka := r.Int64(); ka != 0 && s.keepAlive.CompareAndSwap(ka, 0) {
-			s.latency.Store(int64(min(time.Duration(time.Now().UnixNano()-ka)/2, time.Minute)))
+			// The whole round trip, smoothed like vanilla (3/4 old, 1/4 new; the first
+			// measurement as it is).
+			rtt := int64(min(time.Duration(time.Now().UnixNano()-ka), time.Minute))
+			if old := s.latency.Load(); old != 0 {
+				rtt = (old*3 + rtt) / 4
+			}
+			s.latency.Store(max(rtt, 1))
 		}
 	case v777.ServerboundPlayAcceptTeleportation:
 		tp := r.VarInt()

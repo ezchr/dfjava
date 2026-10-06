@@ -85,8 +85,8 @@ type Session struct {
 	teleportID      atomic.Int32
 	pendingTeleport atomic.Int32
 
-	latency   atomic.Int64 // nanoseconds
-	keepAlive atomic.Int64 // id of the keep-alive we're waiting on, 0 if none
+	latency   atomic.Int64 // round trip in nanoseconds, smoothed like vanilla; 0 until measured
+	keepAlive atomic.Int64 // id (send time in Unix nanoseconds) of the keep-alive we're waiting on, 0 if none
 
 	outMu  sync.Mutex
 	out    []outPacket
@@ -207,6 +207,7 @@ func (s *Session) writeLoop() {
 func (s *Session) Addr() net.Addr { return s.conn.NetConn().RemoteAddr() }
 
 // Latency ...
+// Latency is the round trip to the client, as the Java tab list shows it.
 func (s *Session) Latency() time.Duration { return time.Duration(s.latency.Load()) }
 
 // ChunkRadius ...
@@ -339,23 +340,26 @@ func stopped(err error) bool {
 func (s *Session) tickLoop() {
 	t := time.NewTicker(time.Second / 20)
 	defer t.Stop()
-	ka := time.NewTicker(10 * time.Second)
+	// Keep-alives measure the latency: one right away (so /ping has a value at once), then
+	// every keepAliveInterval. A client that leaves one unanswered for keepAliveTimeout is
+	// dropped, like vanilla.
+	ka := time.NewTicker(keepAliveInterval)
 	defer ka.Stop()
+	s.sendKeepAlive()
 	for {
 		select {
 		case <-s.closed:
 			return
 		case <-ka.C:
-			if s.keepAlive.Load() != 0 {
-				s.log.Info("keep-alive timed out")
-				s.Disconnect("Timed out")
-				return
+			if id := s.keepAlive.Load(); id != 0 {
+				if time.Since(time.Unix(0, id)) > keepAliveTimeout {
+					s.log.Info("keep-alive timed out")
+					s.Disconnect("Timed out")
+					return
+				}
+				continue // still waiting for the answer
 			}
-			id := time.Now().UnixNano()
-			s.keepAlive.Store(id)
-			w := s.packet()
-			w.Int64(id)
-			s.queue(v777.ClientboundPlayKeepAlive, w)
+			s.sendKeepAlive()
 		case <-t.C:
 			err := s.withPlayer(func(tx *world.Tx, c session.Controllable) {
 				if w := tx.World(); w != s.loader.World() {
@@ -375,6 +379,20 @@ func (s *Session) tickLoop() {
 			}
 		}
 	}
+}
+
+const (
+	keepAliveInterval = 5 * time.Second
+	keepAliveTimeout  = 20 * time.Second
+)
+
+// sendKeepAlive sends a keep-alive whose id is its send time.
+func (s *Session) sendKeepAlive() {
+	id := time.Now().UnixNano()
+	s.keepAlive.Store(id)
+	w := s.packet()
+	w.Int64(id)
+	s.queue(v777.ClientboundPlayKeepAlive, w)
 }
 
 // sendCentre tells the client which chunk it is in when that changes (it unloads chunks around it).
