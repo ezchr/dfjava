@@ -6,6 +6,7 @@ import (
 
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/player"
+	jserver "github.com/ezchr/go-mcjava/server"
 	v777 "github.com/ezchr/go-mcjava/v777"
 	"github.com/ezchr/go-mcjava/wire"
 	"github.com/google/uuid"
@@ -26,7 +27,31 @@ type tabList struct {
 type tabEntry struct {
 	name     string
 	gameMode int32
-	latency  int32 // milliseconds
+	latency  int32  // milliseconds
+	xuid     string // a Bedrock player's, for their skin; "" for Java players
+}
+
+// newTabEntry describes p for the tab list.
+func newTabEntry(p *player.Player) tabEntry {
+	e := tabEntry{
+		name:     tabName(p.Name()),
+		gameMode: gameModeID(p.GameMode()),
+		latency:  int32(min(p.Latency(), time.Minute) / time.Millisecond),
+	}
+	if !isJavaPlayer(p.UUID()) {
+		e.xuid = p.XUID()
+	}
+	return e
+}
+
+// props is the profile properties of a tab entry: a Java player's own, or a Bedrock player's
+// skin from GeyserMC's database (nil until it is found).
+func (e tabEntry) props(id uuid.UUID) []jserver.Property {
+	if e.xuid == "" {
+		return profileProperties(id)
+	}
+	props, _ := bedrockSkinProps(e.xuid)
+	return props
 }
 
 // tabState is one session's view of the tab list.
@@ -41,6 +66,8 @@ type tabState struct {
 type tabShown struct {
 	listed   bool
 	gameMode int32
+	// skinless: a Bedrock player shown without a skin; re-added once the skin is found.
+	skinless bool
 }
 
 func newTabList(srv *server.Server) *tabList {
@@ -92,11 +119,9 @@ func (t *tabList) run() {
 func (t *tabList) snapshot() map[uuid.UUID]tabEntry {
 	snap := make(map[uuid.UUID]tabEntry, t.srv.PlayerCount())
 	for p := range t.srv.Players(nil) {
-		snap[p.UUID()] = tabEntry{
-			name:     tabName(p.Name()),
-			gameMode: gameModeID(p.GameMode()),
-			latency:  int32(min(p.Latency(), time.Minute) / time.Millisecond),
-		}
+		e := newTabEntry(p)
+		PrefetchBedrockSkin(e.xuid)
+		snap[p.UUID()] = e
 	}
 	return snap
 }
@@ -114,9 +139,9 @@ const (
 func writeTabAdd(w *wire.Writer, id uuid.UUID, e tabEntry, listed bool) {
 	w.UUID(id)
 	w.String(e.name)
-	// Java players' signed textures show their skin; without properties the client picks a
-	// default skin from the UUID.
-	props := profileProperties(id)
+	// Signed textures show the skin; without properties the client picks a default skin from
+	// the UUID.
+	props := e.props(id)
 	w.VarInt(int32(len(props)))
 	for _, pr := range props {
 		w.String(pr.Name)
@@ -136,19 +161,42 @@ func (s *Session) syncTab(snap map[uuid.UUID]tabEntry) {
 	s.tab.mu.Lock()
 	defer s.tab.mu.Unlock()
 
-	var add []uuid.UUID
+	var add, reskin []uuid.UUID
 	for id, e := range snap {
-		if sh, ok := s.tab.shown[id]; !ok || !sh.listed || sh.gameMode != e.gameMode {
+		sh, ok := s.tab.shown[id]
+		if e.xuid != "" && (!ok || sh.skinless) {
+			props, settled := bedrockSkinProps(e.xuid)
+			if !ok && !settled {
+				continue // hold a new Bedrock player back a moment, so they show with their skin
+			}
+			if ok && sh.skinless && props != nil {
+				// The client keeps the first profile it gets: remove and add again.
+				reskin = append(reskin, id)
+				continue
+			}
+		}
+		if !ok || !sh.listed || sh.gameMode != e.gameMode {
 			add = append(add, id)
 		}
+	}
+	if len(reskin) > 0 {
+		w := s.packet()
+		w.VarInt(int32(len(reskin)))
+		for _, id := range reskin {
+			w.UUID(id)
+			delete(s.tab.shown, id)
+		}
+		s.queue(v777.ClientboundPlayPlayerInfoRemove, w)
+		add = append(add, reskin...)
 	}
 	if len(add) > 0 {
 		w := s.packet()
 		w.Byte(tabAddPlayer | tabUpdateGameMode | tabUpdateListed | tabUpdateLatency)
 		w.VarInt(int32(len(add)))
 		for _, id := range add {
-			writeTabAdd(w, id, snap[id], true)
-			s.tab.shown[id] = tabShown{listed: true, gameMode: snap[id].gameMode}
+			e := snap[id]
+			writeTabAdd(w, id, e, true)
+			s.tab.shown[id] = tabShown{listed: true, gameMode: e.gameMode, skinless: e.xuid != "" && e.props(id) == nil}
 		}
 		s.queue(v777.ClientboundPlayPlayerInfoUpdate, w)
 	}
@@ -192,13 +240,13 @@ func (s *Session) showTabFor(p *player.Player) {
 	if _, ok := s.tab.shown[id]; ok {
 		return
 	}
-	e := tabEntry{name: tabName(p.Name()), gameMode: gameModeID(p.GameMode()), latency: int32(min(p.Latency(), time.Minute) / time.Millisecond)}
+	e := newTabEntry(p)
 	w := s.packet()
 	w.Byte(tabAddPlayer | tabUpdateGameMode | tabUpdateListed | tabUpdateLatency)
 	w.VarInt(1)
 	writeTabAdd(w, id, e, false)
 	s.queue(v777.ClientboundPlayPlayerInfoUpdate, w)
-	s.tab.shown[id] = tabShown{gameMode: e.gameMode}
+	s.tab.shown[id] = tabShown{gameMode: e.gameMode, skinless: e.xuid != "" && e.props(id) == nil}
 }
 
 // hideTabFor drops p's info when p's entity leaves view, unless p is listed as online.

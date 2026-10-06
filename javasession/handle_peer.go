@@ -10,6 +10,9 @@ import (
 // for Bedrock clients (as a peer) before any of them is shown its entity.
 func (s *Session) SetHandle(h *world.EntityHandle, sk skin.Skin) {
 	s.ent = h
-	s.peer = &session.Peer{Handle: h, Name: s.jp.Profile.Name, XUID: s.xuid, Skin: sk}
+	// No XUID in the Bedrock player list: a Java player's (ViaBedrock-style) XUID is not a real
+	// Xbox account, and Bedrock clients crashed opening its profile from the player list.
+	// Geyser lists Java players without one too.
+	s.peer = &session.Peer{Handle: h, Name: s.jp.Profile.Name, Skin: sk}
 	session.AddPeer(s.peer)
 }

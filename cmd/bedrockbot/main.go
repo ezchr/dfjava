@@ -38,6 +38,12 @@ func main() {
 			break
 		}
 		switch p := pk.(type) {
+		case *packet.UpdateAbilities:
+			for _, l := range p.AbilityData.Layers {
+				log.Printf("BedrockBot: abilities layer %d values %#x mayfly=%v flying=%v", l.Type, l.Values, l.Values&protocol.AbilityMayFly != 0, l.Values&protocol.AbilityFlying != 0)
+			}
+		case *packet.SetPlayerGameType:
+			log.Printf("BedrockBot: game type %d", p.GameType)
 		case *packet.PlayerList:
 			for _, e := range p.Entries {
 				if e.ActionType == protocol.PlayerListActionAdd {
