@@ -56,6 +56,7 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 			return true, r.Err
 		}
 		pos := cube.Pos{x, y, z}
+		s.fxDestroyAction(action, pos)
 		s.do(func(tx *world.Tx, c session.Controllable) {
 			// Bedrock clients drive the breaking animation with start/continue/stop and send the
 			// actual break separately (Dragonfly's BreakBlock). A Java client breaks instantly in
@@ -98,6 +99,7 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		if hand == 0 {
 			pos := cube.Pos{x, y, z}
 			click := mgl64.Vec3{float64(cx), float64(cy), float64(cz)}
+			s.fxUsedOn(pos)
 			s.do(func(tx *world.Tx, c session.Controllable) { c.UseItemOnBlock(pos, face, click) })
 		}
 		s.ackBlock(seq)
@@ -110,6 +112,7 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 			return true, r.Err
 		}
 		if hand == 0 {
+			s.fxUsedItem()
 			s.do(func(tx *world.Tx, c session.Controllable) { c.UseItem() })
 		}
 		s.ackBlock(seq)

@@ -95,6 +95,7 @@ func main() {
 		if *spawnTest {
 			tx := p.Tx()
 			at := p.Position().Add(mgl64.Vec3{3, 2, 0})
+			tx.AddEntity(entity.NewText("§l§6Top Kills§r\n§a1. Steve §f- §e42", at.Add(mgl64.Vec3{0, 1, -6})))
 			tx.AddEntity(entity.NewFallingBlock(world.EntitySpawnOpts{Position: at}, block.Sand{}))
 			tx.AddEntity(entity.NewTNT(world.EntitySpawnOpts{Position: at.Add(mgl64.Vec3{0, 0, 3})}, 8*time.Second))
 			tx.AddEntity(entity.NewExperienceOrb(world.EntitySpawnOpts{Position: at.Add(mgl64.Vec3{0, 0, -3})}, 5))

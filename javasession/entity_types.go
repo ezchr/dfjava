@@ -32,6 +32,7 @@ var javaEntityName = map[string]string{
 	"minecraft:agent":                  "",
 	"minecraft:test_moving_ent":        "",
 	"minecraft:cushion":                "",
+	"dragonfly:text":                   "minecraft:text_display",
 }
 
 // networkEncoded is implemented by entities with a network id other than their save id.
@@ -110,6 +111,10 @@ func (s *Session) viewOtherEntity(e world.Entity) {
 
 // viewEntityMeta sends entity data a freshly spawned entity needs: an item entity's item.
 func (s *Session) viewEntityMeta(e world.Entity, id int32) {
+	if isTextEntity(e) {
+		s.viewTextDisplay(e, id, true)
+		return
+	}
 	ent, ok := e.(*entity.Ent)
 	if !ok {
 		return

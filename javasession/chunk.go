@@ -102,6 +102,7 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 		}
 	}
 	var heights [256]uint16
+	lastFilled := -1 // highest section with any non-air block
 	for i, sub := range subs {
 		sec := &col.Sections[i]
 		sec.BlockLayout, sec.BiomeLayout = nil, nil
@@ -151,8 +152,23 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 				}
 			}
 		}
-		fillLight(&col.SkyLight[i+1], sub.SkyLight)
-		fillLight(&col.BlockLight[i+1], sub.BlockLight)
+		if nonAir > 0 {
+			lastFilled = i
+		}
+		// Block light only where there is some (absent means dark).
+		if !fillLight(&col.BlockLight[i+1], sub.BlockLight) {
+			col.BlockLight[i+1].State = jchunk.LightAbsent
+		}
+	}
+	// Sky light like vanilla: up to one section above the highest section with blocks. The client
+	// treats the missing sections above as open sky, so they are not sent (a flat chunk goes from
+	// 26 sky arrays to 3, about 70 KB to 10 KB before compression).
+	for i, sub := range subs {
+		if i <= lastFilled+1 {
+			fillLight(&col.SkyLight[i+1], sub.SkyLight)
+		} else {
+			col.SkyLight[i+1].State = jchunk.LightAbsent
+		}
 	}
 	// Sections the Java dimension has above Dragonfly's world (the nether): empty air.
 	for i := len(subs); i < n; i++ {
@@ -161,14 +177,9 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 		sec.BlockCount, sec.FluidCount = 0, 0
 		col.SkyLight[i+1].State, col.BlockLight[i+1].State = jchunk.LightAbsent, jchunk.LightAbsent
 	}
-	// Below the world: nothing. Above it: full sky light.
+	// Below and above the world: nothing (open sky above).
 	col.SkyLight[0].State, col.BlockLight[0].State = jchunk.LightAbsent, jchunk.LightAbsent
-	top := n + 1
-	col.SkyLight[top].State = jchunk.LightData
-	for i := range col.SkyLight[top].Data {
-		col.SkyLight[top].Data[i] = 0xff
-	}
-	col.BlockLight[top].State = jchunk.LightAbsent
+	col.SkyLight[n+1].State, col.BlockLight[n+1].State = jchunk.LightAbsent, jchunk.LightAbsent
 
 	bits := n * 16
 	data := jchunk.PackHeightmap(s.hm[0][:0], &heights, bits)
@@ -182,16 +193,21 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 	return col
 }
 
-// fillLight copies a sub chunk's light into a Java nibble array.
-func fillLight(l *jchunk.Light, get func(x, y, z byte) uint8) {
+// fillLight copies a sub chunk's light into a Java nibble array and reports whether any of it
+// is non-zero.
+func fillLight(l *jchunk.Light, get func(x, y, z byte) uint8) bool {
 	l.State = jchunk.LightData
 	d := l.Data
+	var any byte
 	for y := byte(0); y < 16; y++ {
 		for z := byte(0); z < 16; z++ {
 			for x := byte(0); x < 16; x += 2 {
 				i := jchunk.BlockIndex(int(x), int(y), int(z))
-				d[i>>1] = get(x, y, z)&0xf | get(x+1, y, z)<<4
+				v := get(x, y, z)&0xf | get(x+1, y, z)<<4
+				d[i>>1] = v
+				any |= v
 			}
 		}
 	}
+	return any != 0
 }

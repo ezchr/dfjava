@@ -138,6 +138,10 @@ func (s *Session) ViewEntityState(e world.Entity) {
 	if p, ok := e.(*player.Player); ok {
 		s.viewPlayerNameTag(p)
 	}
+	if isTextEntity(e) {
+		s.viewTextDisplay(e, id, false)
+		return
+	}
 	st, ok := e.(stateful)
 	if !ok {
 		return
@@ -173,6 +177,7 @@ func (s *Session) ViewEntityState(e world.Entity) {
 	w.Byte(6)
 	w.VarInt(dataTypePose)
 	w.VarInt(pose)
+	s.writeLivingFxData(w, e)
 	w.Byte(0xff)
 	s.queue(v777.ClientboundPlaySetEntityData, w)
 }
