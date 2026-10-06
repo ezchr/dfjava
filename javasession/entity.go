@@ -93,6 +93,7 @@ func (s *Session) ViewEntity(e world.Entity) {
 	s.queue(v777.ClientboundPlayAddEntity, w)
 	s.setTrack(id, pos, rot)
 	s.viewPlayerNameTag(p)
+	s.noteRiding(e)
 }
 
 // HideEntity removes an entity that left view.
@@ -109,6 +110,7 @@ func (s *Session) HideEntity(e world.Entity) {
 	w.VarInt(id)
 	s.queue(v777.ClientboundPlayRemoveEntities, w)
 	s.forgetEntityText(e)
+	s.forgetRiding(e.H())
 	if p, ok := e.(*player.Player); ok {
 		s.hideTabFor(p.UUID()) // online players stay listed
 	}

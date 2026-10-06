@@ -34,9 +34,7 @@ func (*Session) StartShowingEntity(_ world.Entity)                      {}
 func (*Session) StopShowingEntity(_ world.Entity)                       {}
 func (*Session) Transfer(_ net.IP, _ int)                               {}
 func (*Session) UnlockInput(_ input.Lock)                               {}
-func (*Session) ViewEntityDismount(_ world.Entity, _ world.Entity)      {}
 func (*Session) ViewEntityGameMode(_ world.Entity)                      {}
-func (*Session) ViewEntityMount(_ world.Entity, _ world.Entity, _ bool) {}
 func (*Session) ViewLayer() *world.ViewLayer                            { return nil }
 func (*Session) ViewSkin(_ world.Entity)                                {}
 func (*Session) ViewVisibility(_ world.Entity, _ world.VisibilityLevel) {}

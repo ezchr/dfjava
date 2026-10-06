@@ -163,6 +163,9 @@ func (s *Session) syncTab(snap map[uuid.UUID]tabEntry) {
 
 	var add, reskin []uuid.UUID
 	for id, e := range snap {
+		if id == s.id {
+			continue // the client has itself under selfID (showSelfTab)
+		}
 		sh, ok := s.tab.shown[id]
 		if e.xuid != "" && (!ok || sh.skinless) {
 			props, settled := bedrockSkinProps(e.xuid)
@@ -203,7 +206,7 @@ func (s *Session) syncTab(snap map[uuid.UUID]tabEntry) {
 
 	var gone []uuid.UUID
 	for id, sh := range s.tab.shown {
-		if _, ok := snap[id]; !ok && sh.listed && id != s.id {
+		if _, ok := snap[id]; !ok && sh.listed && id != s.selfID {
 			gone = append(gone, id)
 		}
 	}
@@ -224,6 +227,9 @@ func (s *Session) syncTab(snap map[uuid.UUID]tabEntry) {
 		w.Byte(tabUpdateLatency)
 		w.VarInt(int32(len(snap)))
 		for id, e := range snap {
+			if id == s.id {
+				id = s.selfID
+			}
 			w.UUID(id)
 			w.VarInt(e.latency)
 		}
@@ -271,9 +277,9 @@ func (s *Session) showSelfTab(name string, gameMode int32) {
 	w := s.packet()
 	w.Byte(tabAddPlayer | tabUpdateGameMode | tabUpdateListed | tabUpdateLatency)
 	w.VarInt(1)
-	writeTabAdd(w, s.id, tabEntry{name: tabName(name), gameMode: gameMode}, true)
+	writeTabAdd(w, s.selfID, tabEntry{name: tabName(name), gameMode: gameMode}, true)
 	s.queue(v777.ClientboundPlayPlayerInfoUpdate, w)
-	s.tab.shown[s.id] = tabShown{listed: true, gameMode: gameMode}
+	s.tab.shown[s.selfID] = tabShown{listed: true, gameMode: gameMode}
 }
 
 // updateSelfGameMode tells the client its own new game mode in the tab list.
@@ -283,11 +289,11 @@ func (s *Session) updateSelfGameMode(gameMode int32) {
 	w := s.packet()
 	w.Byte(tabUpdateGameMode)
 	w.VarInt(1)
-	w.UUID(s.id)
+	w.UUID(s.selfID)
 	w.VarInt(gameMode)
 	s.queue(v777.ClientboundPlayPlayerInfoUpdate, w)
-	if sh, ok := s.tab.shown[s.id]; ok {
+	if sh, ok := s.tab.shown[s.selfID]; ok {
 		sh.gameMode = gameMode
-		s.tab.shown[s.id] = sh
+		s.tab.shown[s.selfID] = sh
 	}
 }

@@ -31,7 +31,7 @@ var javaEntityName = map[string]string{
 	"minecraft:npc":                    "",
 	"minecraft:agent":                  "",
 	"minecraft:test_moving_ent":        "",
-	"minecraft:cushion":                "",
+	"minecraft:cushion":                "minecraft:cushion", // 26.3; older versions have none
 	"dragonfly:text":                   "minecraft:text_display",
 }
 
@@ -122,12 +122,17 @@ func (s *Session) viewOtherEntity(e world.Entity) {
 	s.queue(v777.ClientboundPlayAddEntity, w)
 	s.setTrack(id, pos, rot)
 	s.viewEntityMeta(e, id)
+	s.noteRiding(e)
 }
 
 // viewEntityMeta sends entity data a freshly spawned entity needs: an item entity's item.
 func (s *Session) viewEntityMeta(e world.Entity, id int32) {
 	if isTextEntity(e) {
 		s.viewTextDisplay(e, id, true)
+		return
+	}
+	if c, ok := e.(*entity.Cushion); ok {
+		s.viewCushionColour(c, id)
 		return
 	}
 	ent, ok := e.(*entity.Ent)

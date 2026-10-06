@@ -30,13 +30,16 @@ import (
 
 // Session is one Java Edition player's connection.
 type Session struct {
-	log  *slog.Logger
-	jp   *server.Player
-	id   uuid.UUID // the player's Dragonfly UUID (see Identity)
-	xuid string
-	skin skin.Skin
-	peer *session.Peer // how Bedrock clients list this player
-	conn *wire.Conn
+	log *slog.Logger
+	jp  *server.Player
+	id  uuid.UUID // the player's Dragonfly UUID (see Identity)
+	// selfID is the UUID the client logged in with (Mojang's): the client finds its own tab
+	// entry, and so its own skin and game mode, under this one, not under id.
+	selfID uuid.UUID
+	xuid   string
+	skin   skin.Skin
+	peer   *session.Peer // how Bedrock clients list this player
+	conn   *wire.Conn
 	// ver is the client's protocol version. The session writes v777 (26.3) ids everywhere and
 	// remaps them with ver where they are written; blk is the block table for ver.
 	ver *version.Version
@@ -56,6 +59,7 @@ type Session struct {
 	// Java entity ids of the entities this client sees (it is selfEntityID itself).
 	entMu        sync.Mutex
 	entityIDs    map[*world.EntityHandle]int32
+	riders       map[*world.EntityHandle][]*world.EntityHandle // vehicle -> riders (riding.go)
 	tracks       map[int32]*track
 	nextEntityID int32
 
@@ -263,6 +267,7 @@ func (s *Session) cleanup() {
 			s.tabs.remove(s)
 		}
 		forgetProfile(s.id)
+		forgetProfile(s.selfID)
 		if s.peer != nil {
 			session.RemovePeer(s.peer)
 		}
