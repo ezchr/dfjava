@@ -1,0 +1,103 @@
+package javasession
+
+import (
+	"github.com/df-mc/dragonfly/server/entity"
+	"github.com/df-mc/dragonfly/server/world"
+	v777 "github.com/ezchr/go-mc/java/v777"
+	"github.com/go-gl/mathgl/mgl64"
+)
+
+// javaEntityName maps Bedrock entity ids whose Java name differs. Ids not listed use the same name.
+var javaEntityName = map[string]string{
+	"minecraft:xp_orb":                 "minecraft:experience_orb",
+	"minecraft:xp_bottle":              "minecraft:experience_bottle",
+	"minecraft:ender_crystal":          "minecraft:end_crystal",
+	"minecraft:fireworks_rocket":       "minecraft:firework_rocket",
+	"minecraft:thrown_trident":         "minecraft:trident",
+	"minecraft:wind_charge_projectile": "minecraft:wind_charge",
+	"minecraft:fishing_hook":           "minecraft:fishing_bobber",
+	"minecraft:villager_v2":            "minecraft:villager",
+	"minecraft:zombie_villager_v2":     "minecraft:zombie_villager",
+	"minecraft:evocation_illager":      "minecraft:evoker",
+	"minecraft:evocation_fang":         "minecraft:evoker_fangs",
+	"minecraft:vindicator":             "minecraft:vindicator",
+	"minecraft:zombie_pigman":          "minecraft:zombified_piglin",
+	"minecraft:snow_golem":             "minecraft:snow_golem",
+	"minecraft:leash_knot":             "minecraft:leash_knot",
+	"minecraft:tripod_camera":          "",
+	"minecraft:npc":                    "",
+	"minecraft:agent":                  "",
+	"minecraft:test_moving_ent":        "",
+	"minecraft:cushion":                "",
+}
+
+// networkEncoded is implemented by entities with a network id other than their save id.
+type networkEncoded interface {
+	NetworkEncodeEntity() string
+}
+
+// javaEntity is the Java entity type of e and the add_entity data field, or ok == false for
+// entities Java has no equivalent of (they stay invisible to Java players).
+func javaEntity(e world.Entity) (typ, data int32, ok bool) {
+	name := e.H().Type().EncodeEntity()
+	if n, ok := e.(networkEncoded); ok {
+		name = n.NetworkEncodeEntity()
+	}
+	if j, listed := javaEntityName[name]; listed {
+		if j == "" {
+			return 0, 0, false
+		}
+		name = j
+	}
+	typ = v777.BuiltinID("minecraft:entity_type", name)
+	if typ < 0 {
+		return 0, 0, false
+	}
+	if ent, ok := e.(*entity.Ent); ok {
+		if fb, ok := ent.Behaviour().(*entity.FallingBlockBehaviour); ok {
+			// falling_block carries its block state in the data field.
+			rid := world.BlockRuntimeID(fb.Block())
+			if bi := blocks(); int(rid) < len(bi.java) {
+				data = int32(bi.java[rid])
+			}
+		}
+	}
+	return typ, data, true
+}
+
+// velocity of e, if it has one.
+func velocity(e world.Entity) mgl64.Vec3 {
+	if v, ok := e.(interface{ Velocity() mgl64.Vec3 }); ok {
+		return v.Velocity()
+	}
+	return mgl64.Vec3{}
+}
+
+// viewOtherEntity spawns a non-player entity.
+func (s *Session) viewOtherEntity(e world.Entity) {
+	typ, data, ok := javaEntity(e)
+	if !ok {
+		return
+	}
+	id := s.addEntityID(e)
+	pos, rot, vel := e.Position(), e.Rotation(), velocity(e)
+	u := e.H().UUID()
+	w := s.packet()
+	w.VarInt(id)
+	w.UUID(u)
+	w.VarInt(typ)
+	w.Float64(pos[0])
+	w.Float64(pos[1])
+	w.Float64(pos[2])
+	w.LpVec3(vel[0], vel[1], vel[2])
+	w.Angle(float32(rot.Pitch()))
+	w.Angle(float32(rot.Yaw()))
+	w.Angle(float32(rot.Yaw()))
+	w.VarInt(data)
+	s.queue(v777.ClientboundPlayAddEntity, w)
+	s.viewEntityMeta(e, id)
+}
+
+// viewEntityMeta sends entity data a freshly spawned entity needs (item entities show their item
+// once item stacks are encodable).
+func (s *Session) viewEntityMeta(e world.Entity, id int32) {}

@@ -56,13 +56,14 @@ func tabName(n string) string {
 	return string(r)
 }
 
-// ViewEntity shows an entity that came into view. Only players for now.
+// ViewEntity shows an entity that came into view.
 func (s *Session) ViewEntity(e world.Entity) {
 	if e.H() == s.ent {
 		return
 	}
 	p, ok := e.(*player.Player)
 	if !ok {
+		s.viewOtherEntity(e)
 		return
 	}
 	id := s.addEntityID(e)

@@ -6,14 +6,18 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/df-mc/dragonfly/server"
 	"github.com/df-mc/dragonfly/server/block"
+	"github.com/df-mc/dragonfly/server/entity"
+	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/biome"
 	"github.com/df-mc/dragonfly/server/world/generator"
 	"github.com/ezchr/dfjava/javasession"
 	jserver "github.com/ezchr/go-mc/java/server"
+	"github.com/go-gl/mathgl/mgl64"
 )
 
 func main() {
@@ -21,6 +25,7 @@ func main() {
 	bedrockAddr := flag.String("bedrock", "127.0.0.1:19160", "Bedrock listen address")
 	folder := flag.String("world", "dfjtest-world", "world folder")
 	radius := flag.Int("radius", 6, "chunk radius")
+	spawnTest := flag.Bool("spawntest", false, "spawn test entities (TNT, falling sand, xp orbs, an item) near each joining player")
 	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -61,5 +66,13 @@ func main() {
 
 	for p := range srv.Accept() {
 		log.Info("player in world", "name", p.Name(), "pos", p.Position())
+		if *spawnTest {
+			tx := p.Tx()
+			at := p.Position().Add(mgl64.Vec3{3, 2, 0})
+			tx.AddEntity(entity.NewFallingBlock(world.EntitySpawnOpts{Position: at}, block.Sand{}))
+			tx.AddEntity(entity.NewTNT(world.EntitySpawnOpts{Position: at.Add(mgl64.Vec3{0, 0, 3})}, 8*time.Second))
+			tx.AddEntity(entity.NewExperienceOrb(world.EntitySpawnOpts{Position: at.Add(mgl64.Vec3{0, 0, -3})}, 5))
+			tx.AddEntity(entity.NewItem(world.EntitySpawnOpts{Position: at.Add(mgl64.Vec3{-6, 0, 0})}, item.NewStack(item.Diamond{}, 3)))
+		}
 	}
 }
