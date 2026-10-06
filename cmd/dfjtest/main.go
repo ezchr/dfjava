@@ -5,6 +5,8 @@ package main
 import (
 	"flag"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -25,9 +27,13 @@ func main() {
 	bedrockAddr := flag.String("bedrock", "127.0.0.1:19160", "Bedrock listen address")
 	folder := flag.String("world", "dfjtest-world", "world folder")
 	radius := flag.Int("radius", 6, "chunk radius")
+	pprofAddr := flag.String("pprof", "", "serve net/http/pprof on this address (for profiling)")
 	spawnTest := flag.Bool("spawntest", false, "spawn test entities (TNT, falling sand, xp orbs, an item) near each joining player")
 	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
+	if *pprofAddr != "" {
+		go http.ListenAndServe(*pprofAddr, nil)
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	uc := server.DefaultConfig()

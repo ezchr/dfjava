@@ -45,14 +45,14 @@ type Session struct {
 	vitalsMu sync.Mutex
 	vitals   vitals
 
-	input inputState
+	input      inputState
 
 	timeMu      sync.Mutex
 	time        int
 	timeStopped bool
-	lastCentre  world.ChunkPos
-	centreSent  bool
-	closeOnce   sync.Once
+	lastCentre world.ChunkPos
+	centreSent bool
+	closeOnce  sync.Once
 
 	// Chunk sending: the client says how many chunks per tick it can take (in thousandths);
 	// one batch waits for its acknowledgement at a time.
@@ -119,6 +119,11 @@ func (s *Session) queue(id int32, w *wire.Writer) {
 	}
 }
 
+// flushDelay is how long the writer waits after the first queued packet before writing: the world
+// queues packets in bursts (a tick's movement of every visible entity), and one write per burst
+// instead of one per packet saves most of the CPU (it was 70% syscalls at 30 players).
+const flushDelay = 2 * time.Millisecond
+
 func (s *Session) writeLoop() {
 	var batch []outPacket
 	for {
@@ -127,6 +132,7 @@ func (s *Session) writeLoop() {
 		case <-s.closed:
 			return
 		}
+		time.Sleep(flushDelay)
 		s.outMu.Lock()
 		batch, s.out = s.out, batch[:0]
 		s.outMu.Unlock()
