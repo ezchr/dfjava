@@ -203,6 +203,7 @@ func (s *Session) CloseConnection() {
 // remove the player entity from the world (a player with a session is removed by the session).
 func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 	s.closeOnce.Do(func() {
+		s.closeContainers(tx, c)
 		if s.onClose != nil {
 			s.onClose(tx, c)
 		}
