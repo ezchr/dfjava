@@ -1,6 +1,8 @@
 package javasession
 
 import (
+	"sync"
+
 	"github.com/df-mc/dragonfly/server/entity"
 	"github.com/df-mc/dragonfly/server/world"
 	jitem "github.com/ezchr/go-mc/java/item"
@@ -66,6 +68,9 @@ func javaEntity(e world.Entity) (typ, data int32, ok bool) {
 	return typ, data, true
 }
 
+// skippedTypes are the entity types already logged as having no Java equivalent.
+var skippedTypes sync.Map
+
 // velocity of e, if it has one.
 func velocity(e world.Entity) mgl64.Vec3 {
 	if v, ok := e.(interface{ Velocity() mgl64.Vec3 }); ok {
@@ -78,6 +83,9 @@ func velocity(e world.Entity) mgl64.Vec3 {
 func (s *Session) viewOtherEntity(e world.Entity) {
 	typ, data, ok := javaEntity(e)
 	if !ok {
+		if _, seen := skippedTypes.LoadOrStore(e.H().Type().EncodeEntity(), true); !seen {
+			s.log.Info("no Java entity for this type; Java players do not see it", "type", e.H().Type().EncodeEntity())
+		}
 		return
 	}
 	id := s.addEntityID(e)
