@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/entity"
 	"github.com/df-mc/dragonfly/server/item"
+	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/biome"
 	"github.com/df-mc/dragonfly/server/world/generator"
@@ -31,6 +33,10 @@ func main() {
 	spawnTest := flag.Bool("spawntest", false, "spawn test entities (TNT, falling sand, xp orbs, an item) near each joining player")
 	netherTest := flag.Bool("nethertest", false, "move each joining player to the nether after 10 s")
 	noAuth := flag.Bool("noauth", false, "let Bedrock clients join without Xbox authentication (for test bots)")
+	killTest := flag.Bool("killtest", false, "kill each joining player after 6 s")
+	kickTest := flag.Bool("kicktest", false, "kick each joining player after 20 s with a reason")
+	worldTest := flag.Bool("worldtest", false, "move each joining player to a second overworld world after 10 s")
+	slimeFloor := flag.Bool("slimefloor", false, "top layer of slime (breaks instantly, for testing)")
 	survival := flag.Bool("survival", true, "new players start in survival (Dragonfly defaults to creative)")
 	flag.Parse()
 	if *pprofAddr != "" {
@@ -49,7 +55,11 @@ func main() {
 		os.Exit(1)
 	}
 	conf.Generator = func(world.Dimension) world.Generator {
-		return generator.NewFlat(biome.Plains{}, []world.Block{block.Grass{}, block.Dirt{}, block.Dirt{}, block.Bedrock{}})
+		top := world.Block(block.Grass{})
+		if *slimeFloor {
+			top = block.Slime{}
+		}
+		return generator.NewFlat(biome.Plains{}, []world.Block{top, block.Dirt{}, block.Dirt{}, block.Bedrock{}})
 	}
 	srv := conf.New()
 	if *survival {
@@ -73,8 +83,40 @@ func main() {
 	log.Info("java listening", "addr", jl.Addr())
 	go javasession.Run(javasession.Config{Server: srv, Listener: jl, ChunkRadius: *radius, Log: log})
 
+	var second *world.World
+	if *worldTest {
+		second = world.Config{Dim: world.Overworld, Entities: entity.DefaultRegistry, Log: log,
+			Generator: generator.NewFlat(biome.Plains{}, []world.Block{block.Stone{}, block.Stone{}, block.Bedrock{}})}.New()
+	}
+	later := func(h *world.EntityHandle, d time.Duration, f func(tx *world.Tx, p *player.Player)) {
+		go func() {
+			time.Sleep(d)
+			_, _ = player.Call(context.Background(), h, func(tx *world.Tx, p *player.Player) (struct{}, error) {
+				f(tx, p)
+				return struct{}{}, nil
+			})
+		}()
+	}
 	for p := range srv.Accept() {
 		log.Info("player in world", "name", p.Name(), "pos", p.Position())
+		if *killTest {
+			later(p.H(), 6*time.Second, func(tx *world.Tx, p *player.Player) {
+				p.Hurt(1000, entity.VoidDamageSource{})
+				log.Info("killed", "name", p.Name())
+			})
+		}
+		if *kickTest {
+			later(p.H(), 20*time.Second, func(tx *world.Tx, p *player.Player) { p.Disconnect("Kick test: the reason arrived") })
+		}
+		if *worldTest {
+			later(p.H(), 10*time.Second, func(tx *world.Tx, p *player.Player) {
+				handle := tx.RemoveEntity(p)
+				second.Do(func(tx *world.Tx) {
+					tx.AddEntityAt(handle, mgl64.Vec3{8.5, 4, 8.5})
+					log.Info("moved to the second world", "name", p.Name())
+				})
+			})
+		}
 		if *netherTest {
 			h := p.H()
 			go func() {

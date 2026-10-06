@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,11 @@ type Session struct {
 	ent     *world.EntityHandle
 	onClose func(*world.Tx, session.Controllable)
 
+	tabs        *tabList
+	tab         tabState
+	cleanupOnce sync.Once
+	spawned     atomic.Bool
+
 	// Java entity ids of the entities this client sees (it is selfEntityID itself).
 	entMu        sync.Mutex
 	entityIDs    map[*world.EntityHandle]int32
@@ -56,6 +62,8 @@ type Session struct {
 	timeMu      sync.Mutex
 	time        int
 	timeStopped bool
+	raining     bool
+	thunder     bool
 	lastCentre  world.ChunkPos
 	centreSent  bool
 	closeOnce   sync.Once
@@ -101,6 +109,8 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 		tracks:      map[int32]*track{},
 		vitals:      vitals{health: 20, food: 20, saturation: 5},
 	}
+	s.tab.shown = map[uuid.UUID]tabShown{}
+	s.chunks.sent = map[world.ChunkPos]struct{}{}
 	s.chunkRate.Store(9000) // vanilla's starting rate: 9 chunks per tick
 	s.writers.New = func() any { return &wire.Writer{B: make([]byte, 0, 256)} }
 	go s.writeLoop()
@@ -117,9 +127,21 @@ func (s *Session) packet() *wire.Writer {
 // queue sends a packet built with s.packet(). It never blocks on the network: viewer methods run
 // on the world goroutine.
 func (s *Session) queue(id int32, w *wire.Writer) {
+	select {
+	case <-s.closed:
+		return // nothing will send it
+	default:
+	}
 	s.outMu.Lock()
 	s.out = append(s.out, outPacket{id, w})
+	n := len(s.out)
 	s.outMu.Unlock()
+	if n > maxQueued {
+		// The client stopped reading: drop it before its backlog eats the memory.
+		s.log.Info("send queue full", "packets", n)
+		s.CloseConnection()
+		return
+	}
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -131,15 +153,23 @@ func (s *Session) queue(id int32, w *wire.Writer) {
 // instead of one per packet saves most of the CPU (it was 70% syscalls at 30 players).
 const flushDelay = 2 * time.Millisecond
 
+// maxQueued is how many packets may wait for the writer before the client is dropped: a client
+// that stops reading would otherwise make the session hold everything the world sends it.
+const maxQueued = 1 << 16
+
+// writeLoop writes queued packets. Once the connection is closing it writes what is still queued
+// (a disconnect reason) and closes the socket; CloseConnection limits how long that may take.
 func (s *Session) writeLoop() {
+	defer s.conn.Close()
 	var batch []outPacket
 	for {
+		closing := false
 		select {
 		case <-s.wake:
+			time.Sleep(flushDelay)
 		case <-s.closed:
-			return
+			closing = true
 		}
-		time.Sleep(flushDelay)
 		s.outMu.Lock()
 		batch, s.out = s.out, batch[:0]
 		s.outMu.Unlock()
@@ -153,7 +183,7 @@ func (s *Session) writeLoop() {
 				return
 			}
 		}
-		if err := s.conn.Flush(); err != nil {
+		if err := s.conn.Flush(); err != nil || closing {
 			s.CloseConnection()
 			return
 		}
@@ -184,15 +214,33 @@ func (s *Session) Disconnect(message string) {
 	w := s.packet()
 	server.TextComponent(w, message)
 	s.queue(v777.ClientboundPlayDisconnect, w)
-	// Give the writer a moment to send it before the socket closes.
-	time.AfterFunc(200*time.Millisecond, s.CloseConnection)
+	s.CloseConnection() // the writer sends the reason first
 }
 
-// CloseConnection closes the network connection; the read loop then removes the player.
+// CloseConnection closes the network connection after writing what is queued, which may take at
+// most a second; the read loop then removes the player. A session that never spawned is cleaned
+// up here, since Close is never called for it.
 func (s *Session) CloseConnection() {
 	s.once.Do(func() {
+		_ = s.conn.NetConn().SetWriteDeadline(time.Now().Add(time.Second))
 		close(s.closed)
-		s.conn.Close()
+		if !s.spawned.Load() {
+			s.cleanup()
+		}
+	})
+}
+
+// cleanup undoes what joining registered outside the world: the Bedrock peer, the Java profile
+// and the tab list subscription.
+func (s *Session) cleanup() {
+	s.cleanupOnce.Do(func() {
+		if s.tabs != nil {
+			s.tabs.remove(s)
+		}
+		forgetProfile(s.id)
+		if s.peer != nil {
+			session.RemovePeer(s.peer)
+		}
 	})
 }
 
@@ -209,6 +257,11 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 		}
 		if tx != nil {
 			if s.loader != nil {
+				// The player may have been moved to another world since the last tick (quitting
+				// on the death screen respawns them): the loader must leave the world it views.
+				if s.loader.World() != tx.World() {
+					s.loader.ChangeWorld(tx, tx.World())
+				}
 				s.loader.Close(tx)
 			}
 			tx.RemoveEntity(c)
@@ -217,10 +270,7 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 			}
 		}
 		s.CloseConnection()
-		forgetProfile(s.id)
-		if s.peer != nil {
-			session.RemovePeer(s.peer)
-		}
+		s.cleanup()
 		s.entMu.Lock()
 		clear(s.entityIDs)
 		s.entMu.Unlock()
@@ -230,6 +280,7 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 // Spawn starts the session once the player entity is in the world.
 func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.ent = c.H()
+	s.spawned.Store(true)
 	s.SendHealth(c.Health(), c.MaxHealth(), c.Absorption())
 	s.SendFood(c.Food(), 0, 0)
 	s.SendExperience(c.ExperienceLevel(), c.ExperienceProgress())
@@ -238,14 +289,29 @@ func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.loader = world.NewLoader(int(s.chunkRadius), tx.World(), s)
 	s.loader.Move(tx, pos)
 	s.sendCentre(pos)
+	s.showSelfTab(s.jp.Profile.Name, gameModeID(c.GameMode()))
+	if s.tabs != nil {
+		s.tabs.add(s)
+	}
 	s.SpawnText(c)
 	go s.tickLoop()
 	go s.readLoop()
 }
 
-// withPlayer runs f in the player's world transaction.
-func (s *Session) withPlayer(f func(tx *world.Tx, c session.Controllable)) error {
-	_, err := world.CallRef(context.Background(), world.NewEntityRef[session.Controllable](s.ent), func(tx *world.Tx, c session.Controllable) (struct{}, error) {
+// errPanic is returned by withPlayer when f (or what it called in Dragonfly) panicked.
+var errPanic = errors.New("panic in player task")
+
+// withPlayer runs f in the player's world transaction. A panic is logged and disconnects the
+// client instead of taking the server down (the world re-raises task panics in the caller).
+func (s *Session) withPlayer(f func(tx *world.Tx, c session.Controllable)) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("panic in player task", "panic", r, "stack", string(debug.Stack()))
+			s.Disconnect("Internal server error")
+			err = errPanic
+		}
+	}()
+	_, err = world.CallRef(context.Background(), world.NewEntityRef[session.Controllable](s.ent), func(tx *world.Tx, c session.Controllable) (struct{}, error) {
 		f(tx, c)
 		return struct{}{}, nil
 	})
@@ -305,6 +371,7 @@ func (s *Session) sendCentre(pos mgl64.Vec3) {
 		return
 	}
 	s.lastCentre, s.centreSent = cp, true
+	s.forgetFarChunks(cp)
 	w := s.packet()
 	w.VarInt(cp[0])
 	w.VarInt(cp[1])
@@ -324,7 +391,15 @@ func (s *Session) readLoop() {
 		if err != nil && !stopped(err) {
 			s.log.Error("player not closed: data not saved", "err", err)
 		}
+		s.cleanup()
 		s.log.Info("left")
+	}()
+	defer func() {
+		// A packet our decoding or handling code chokes on drops the client, not the server.
+		if r := recover(); r != nil {
+			s.log.Error("panic handling packet", "panic", r, "stack", string(debug.Stack()))
+			s.Disconnect("Internal server error")
+		}
 	}()
 	for {
 		id, body, err := s.conn.ReadPacket()

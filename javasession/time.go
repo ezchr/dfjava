@@ -34,8 +34,20 @@ func (s *Session) ViewTimeCycle(doCycle bool) {
 	s.ViewTime(t)
 }
 
+// resendLevelInfo sends the time and weather again, for a client that made a new level.
+func (s *Session) resendLevelInfo() {
+	s.timeMu.Lock()
+	t, raining, thunder := s.time, s.raining, s.thunder
+	s.timeMu.Unlock()
+	s.ViewTime(t)
+	s.ViewWeather(raining, thunder)
+}
+
 // ViewWeather shows rain and thunder.
 func (s *Session) ViewWeather(raining, thunder bool) {
+	s.timeMu.Lock()
+	s.raining, s.thunder = raining, thunder
+	s.timeMu.Unlock()
 	event := func(id byte, v float32) {
 		w := s.packet()
 		w.Byte(id)

@@ -1,6 +1,7 @@
 package javasession
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -40,16 +41,17 @@ func Run(conf Config) {
 	if conf.ChunkRadius <= 0 {
 		conf.ChunkRadius = 8
 	}
+	tabs := newTabList(conf.Server)
 	for {
 		jp, err := conf.Listener.Accept()
 		if err != nil {
 			return
 		}
-		go join(conf, jp)
+		go join(conf, tabs, jp)
 	}
 }
 
-func join(conf Config, jp *jserver.Player) {
+func join(conf Config, tabs *tabList, jp *jserver.Player) {
 	identity := conf.Identity
 	if identity == nil {
 		identity = ViaBedrockIdentity
@@ -78,12 +80,20 @@ func join(conf Config, jp *jserver.Player) {
 	}
 	s := newSession(jp, radius, conf.Log)
 	s.id = id
+	s.tabs = tabs
 	s.xuid, s.skin = xuid, pc.Skin
 	registerProfile(id, jp.Profile.Properties)
 	s.sendLogin(pc, w)
 	if err := conf.Server.AddPlayer(s, pc, w); err != nil {
 		s.log.Info("join refused", "err", err)
-		s.Disconnect("You are already logged in.")
+		switch {
+		case errors.Is(err, server.ErrAlreadyOnline):
+			s.Disconnect("You are already logged in.")
+		case errors.Is(err, server.ErrServerClosed):
+			s.Disconnect("Server closed")
+		default:
+			s.Disconnect("Could not join: " + err.Error())
+		}
 		return
 	}
 	s.log.Info("joined", "addr", s.Addr(), "gamemode", gameModeID(pc.GameMode), "pos", pc.Position)

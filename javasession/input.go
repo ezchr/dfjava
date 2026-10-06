@@ -1,6 +1,8 @@
 package javasession
 
 import (
+	"time"
+
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/session"
 	"github.com/df-mc/dragonfly/server/world"
@@ -15,6 +17,18 @@ type inputState struct {
 	jumping   bool
 	breaking  bool
 	breakFace cube.Face
+	breakPos  cube.Pos
+}
+
+// validFace reports whether a face from the client is one of the six.
+func validFace(f cube.Face) bool { return f >= cube.FaceDown && f <= cube.FaceEast }
+
+// clamp01 keeps a click position component within the block (NaN becomes 0.5).
+func clamp01(v float32) float64 {
+	if v != v {
+		return 0.5
+	}
+	return float64(max(0, min(1, v)))
 }
 
 // Java player_action actions.
@@ -41,6 +55,10 @@ const (
 	commandStopSleeping = iota
 	commandStartSprinting
 	commandStopSprinting
+	commandStartRidingJump
+	commandStopRidingJump
+	commandOpenInventory
+	commandStartFallFlying
 )
 
 // handleInput handles the client's world interaction packets.
@@ -52,27 +70,38 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		x, y, z := r.Position()
 		face := cube.Face(r.Byte())
 		seq := r.VarInt()
-		if r.Err != nil || face > cube.FaceEast {
+		if r.Err != nil || !validFace(face) {
 			return true, r.Err
 		}
 		pos := cube.Pos{x, y, z}
 		s.fxDestroyAction(action, pos)
 		s.do(func(tx *world.Tx, c session.Controllable) {
 			// Bedrock clients drive the breaking animation with start/continue/stop and send the
-			// actual break separately (Dragonfly's BreakBlock). A Java client breaks instantly in
-			// creative on START, and in survival says STOP when it finished breaking.
+			// actual break separately (Dragonfly's BreakBlock). A Java client breaks on START in
+			// creative and when the block breaks within a tick (flowers, torches, instamining), and
+			// otherwise says STOP when it finished breaking the block it STARTed on.
 			switch action {
 			case actionStartDestroy:
 				if c.GameMode().CreativeInventory() {
 					c.BreakBlock(pos)
 					return
 				}
+				if bt, ok := c.(interface{ BreakTime(cube.Pos) time.Duration }); ok && bt.BreakTime(pos) <= time.Second/20 {
+					c.BreakBlock(pos)
+					s.input.breaking = false
+					return
+				}
 				c.StartBreaking(pos, face)
-				s.input.breaking, s.input.breakFace = true, face
+				s.input.breaking, s.input.breakFace, s.input.breakPos = true, face, pos
 			case actionAbortDestroy:
 				c.AbortBreaking()
 				s.input.breaking = false
 			case actionStopDestroy:
+				// Only the block being broken: a STOP for any other position (or without a START)
+				// would break blocks without breaking them.
+				if !s.input.breaking || pos != s.input.breakPos {
+					return
+				}
 				c.FinishBreaking()
 				c.BreakBlock(pos)
 				s.input.breaking = false
@@ -93,12 +122,13 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		r.Bool() // inside block
 		r.Bool() // world border hit
 		seq := r.VarInt()
-		if r.Err != nil || face > cube.FaceEast {
+		if r.Err != nil || !validFace(face) {
 			return true, r.Err
 		}
 		if hand == 0 {
 			pos := cube.Pos{x, y, z}
-			click := mgl64.Vec3{float64(cx), float64(cy), float64(cz)}
+			// The click position is within the block; clamp what a hostile client sends (NaN too).
+			click := mgl64.Vec3{clamp01(cx), clamp01(cy), clamp01(cz)}
 			s.fxUsedOn(pos)
 			s.do(func(tx *world.Tx, c session.Controllable) { c.UseItemOnBlock(pos, face, click) })
 		}
@@ -177,10 +207,14 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 		}
 		s.do(func(tx *world.Tx, c session.Controllable) {
 			switch action {
+			case commandStopSleeping: // the Leave Bed button
+				c.Wake()
 			case commandStartSprinting:
 				c.StartSprinting()
 			case commandStopSprinting:
 				c.StopSprinting()
+			case commandStartFallFlying: // elytra
+				c.StartGliding()
 			}
 		})
 	case v777.ServerboundPlayClientCommand:

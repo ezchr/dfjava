@@ -2,7 +2,6 @@ package javasession
 
 import (
 	"math"
-	"time"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/entity"
@@ -75,30 +74,10 @@ func (s *Session) ViewEntity(e world.Entity) {
 	u := p.UUID()
 
 	// Tab list entry first: the client needs the profile to spawn a player entity.
-	w := s.packet()
-	w.Byte(1<<0 | 1<<2 | 1<<3 | 1<<4) // ADD_PLAYER, UPDATE_GAME_MODE, UPDATE_LISTED, UPDATE_LATENCY
-	w.VarInt(1)
-	w.UUID(u)
-	w.String(tabName(p.Name()))
-	// Java players' signed textures show their skin; without properties the client picks a
-	// default skin from the UUID.
-	props := profileProperties(u)
-	w.VarInt(int32(len(props)))
-	for _, pr := range props {
-		w.String(pr.Name)
-		w.String(pr.Value)
-		w.Bool(pr.Signature != "")
-		if pr.Signature != "" {
-			w.String(pr.Signature)
-		}
-	}
-	w.VarInt(gameModeID(p.GameMode()))
-	w.Bool(true)
-	w.VarInt(int32(p.Latency() / time.Millisecond))
-	s.queue(v777.ClientboundPlayPlayerInfoUpdate, w)
+	s.showTabFor(p)
 
 	pos, rot := p.Position(), p.Rotation()
-	w = s.packet()
+	w := s.packet()
 	w.VarInt(id)
 	w.UUID(u)
 	w.VarInt(entityTypePlayer)
@@ -128,11 +107,9 @@ func (s *Session) HideEntity(e world.Entity) {
 	w.VarInt(1)
 	w.VarInt(id)
 	s.queue(v777.ClientboundPlayRemoveEntities, w)
+	s.forgetEntityText(e)
 	if p, ok := e.(*player.Player); ok {
-		w = s.packet()
-		w.VarInt(1)
-		w.UUID(p.UUID())
-		s.queue(v777.ClientboundPlayPlayerInfoRemove, w)
+		s.hideTabFor(p.UUID()) // online players stay listed
 	}
 }
 

@@ -1,6 +1,7 @@
 package javasession
 
 import (
+	"math"
 	"sync"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -34,6 +35,12 @@ func blocks() *blockInfo {
 type chunkState struct {
 	batching bool // inside sendChunkBatch: chunks go into a batch
 	inBatch  int  // chunks queued in the batch being built this tick
+
+	// sent is every chunk the client has from us. The loader drops chunks without telling its
+	// viewer, so the session forgets them on the client itself: the client would otherwise keep
+	// showing them (they get no more block updates), or another world's terrain after a switch.
+	sentMu sync.Mutex
+	sent   map[world.ChunkPos]struct{}
 }
 
 // sendChunkBatch loads chunks around the player as one batch, at most the rate the client asked
@@ -79,6 +86,45 @@ func (s *Session) ViewChunk(pos world.ChunkPos, dim world.Dimension, blockEntiti
 		return
 	}
 	s.queue(v777.ClientboundPlayLevelChunkWithLight, p)
+	s.chunks.sentMu.Lock()
+	s.chunks.sent[pos] = struct{}{}
+	s.chunks.sentMu.Unlock()
+}
+
+// forgetFarChunks unloads the chunks the loader dropped around a new centre: those further than
+// the radius, measured like the loader does.
+func (s *Session) forgetFarChunks(centre world.ChunkPos) {
+	r := float64(s.chunkRadius)
+	s.chunks.sentMu.Lock()
+	defer s.chunks.sentMu.Unlock()
+	for pos := range s.chunks.sent {
+		dx, dz := float64(pos[0]-centre[0]), float64(pos[1]-centre[1])
+		if math.Round(math.Sqrt(dx*dx+dz*dz)) > r {
+			s.forgetChunk(pos)
+		}
+	}
+}
+
+// forgetAllChunks unloads every chunk the client has (a switch to another world of the same
+// dimension; a dimension change clears the client by itself).
+func (s *Session) forgetAllChunks(tell bool) {
+	s.chunks.sentMu.Lock()
+	defer s.chunks.sentMu.Unlock()
+	if !tell {
+		clear(s.chunks.sent)
+		return
+	}
+	for pos := range s.chunks.sent {
+		s.forgetChunk(pos)
+	}
+}
+
+// forgetChunk sends forget_level_chunk. sentMu must be held.
+func (s *Session) forgetChunk(pos world.ChunkPos) {
+	delete(s.chunks.sent, pos)
+	w := s.packet()
+	w.Int64(int64(uint64(uint32(pos[0])) | uint64(uint32(pos[1]))<<32)) // ChunkPos.pack
+	s.queue(v777.ClientboundPlayForgetLevelChunk, w)
 }
 
 // column converts a Dragonfly chunk. The Column is reused per session.

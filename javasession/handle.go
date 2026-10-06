@@ -1,6 +1,8 @@
 package javasession
 
 import (
+	"errors"
+	"math"
 	"time"
 
 	"github.com/df-mc/dragonfly/server/session"
@@ -15,10 +17,9 @@ func (s *Session) handle(id int32, body []byte) error {
 	r := wire.NewReader(body)
 	switch id {
 	case v777.ServerboundPlayKeepAlive:
-		ka := r.Int64()
-		if ka == s.keepAlive.Load() {
-			s.latency.Store(int64(time.Duration(time.Now().UnixNano()-ka) / 2))
-			s.keepAlive.Store(0)
+		// Only the keep-alive we are waiting for counts (ids are send times in nanoseconds).
+		if ka := r.Int64(); ka != 0 && s.keepAlive.CompareAndSwap(ka, 0) {
+			s.latency.Store(int64(min(time.Duration(time.Now().UnixNano()-ka)/2, time.Minute)))
 		}
 	case v777.ServerboundPlayAcceptTeleportation:
 		tp := r.VarInt()
@@ -27,20 +28,20 @@ func (s *Session) handle(id int32, body []byte) error {
 		x, y, z := r.Float64(), r.Float64(), r.Float64()
 		flags := r.Byte()
 		if r.Err == nil {
-			s.move(&mgl64.Vec3{x, y, z}, nil, flags)
+			return s.move(&mgl64.Vec3{x, y, z}, nil, flags)
 		}
 	case v777.ServerboundPlayMovePlayerPosRot:
 		x, y, z := r.Float64(), r.Float64(), r.Float64()
 		yaw, pitch := r.Float32(), r.Float32()
 		flags := r.Byte()
 		if r.Err == nil {
-			s.move(&mgl64.Vec3{x, y, z}, &[2]float32{yaw, pitch}, flags)
+			return s.move(&mgl64.Vec3{x, y, z}, &[2]float32{yaw, pitch}, flags)
 		}
 	case v777.ServerboundPlayMovePlayerRot:
 		yaw, pitch := r.Float32(), r.Float32()
 		flags := r.Byte()
 		if r.Err == nil {
-			s.move(nil, &[2]float32{yaw, pitch}, flags)
+			return s.move(nil, &[2]float32{yaw, pitch}, flags)
 		}
 	case v777.ServerboundPlayChunkBatchReceived:
 		rate := float64(r.Float32())
@@ -63,12 +64,50 @@ func (s *Session) handle(id int32, body []byte) error {
 	return r.Err
 }
 
+// errInvalidMove is returned for a move a vanilla client cannot send (NaN, infinite or far
+// outside any world); the client is disconnected, like vanilla does.
+var errInvalidMove = errors.New("invalid move")
+
+// validMove reports whether a client position and rotation are finite and inside the limits
+// vanilla accepts (ServerGamePacketListenerImpl.containsInvalidValues / clamps).
+func validMove(pos *mgl64.Vec3, rot *[2]float32) bool {
+	if pos != nil {
+		for _, v := range pos {
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return false
+			}
+		}
+		if math.Abs(pos[0]) > 3e7 || math.Abs(pos[2]) > 3e7 || math.Abs(pos[1]) > 2e7 {
+			return false
+		}
+	}
+	if rot != nil {
+		for _, v := range rot {
+			if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // move applies a client move. Positions are feet positions on both editions.
-func (s *Session) move(pos *mgl64.Vec3, rot *[2]float32, flags byte) {
-	if s.pendingTeleport.Load() != 0 {
-		return // the client hasn't caught up with our last teleport yet
+func (s *Session) move(pos *mgl64.Vec3, rot *[2]float32, flags byte) error {
+	if !validMove(pos, rot) {
+		return errInvalidMove
+	}
+	if rot != nil {
+		rot[1] = max(-90, min(90, rot[1]))
 	}
 	err := s.withPlayer(func(tx *world.Tx, c session.Controllable) {
+		// Checked in the world transaction: a teleport made there after this packet was read
+		// must not be undone by it.
+		if s.pendingTeleport.Load() != 0 {
+			return // the client has not caught up with our last teleport yet
+		}
+		if tx.World() != s.loader.World() {
+			return // moved to another world: the next tick's switchWorld teleports the client
+		}
 		var delta mgl64.Vec3
 		if pos != nil {
 			delta = pos.Sub(c.Position())
@@ -83,4 +122,5 @@ func (s *Session) move(pos *mgl64.Vec3, rot *[2]float32, flags byte) {
 	if err != nil && !stopped(err) {
 		s.log.Debug("move", "err", err)
 	}
+	return nil
 }

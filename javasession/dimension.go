@@ -39,6 +39,7 @@ func (s *Session) writeRespawn(dim string, c session.Controllable, keep byte) {
 func (s *Session) switchWorld(tx *world.Tx, w *world.World, c session.Controllable) {
 	if dim := dimensionKey(w.Dimension()); dim != s.dim {
 		s.dim = dim
+		s.forgetAllChunks(false)
 		s.writeRespawn(dim, c, 3)
 		// The client forgets every entity and chunk when it changes dimension.
 		s.entMu.Lock()
@@ -55,6 +56,9 @@ func (s *Session) switchWorld(tx *world.Tx, w *world.World, c session.Controllab
 		s.SendAbilities(c)
 		s.SendHealth(c.Health(), c.MaxHealth(), c.Absorption())
 		s.SendFood(c.Food(), 0, 0)
+		s.resendLevelInfo() // the client has a new level: no time or weather yet
+	} else {
+		s.forgetAllChunks(true)
 	}
 	pos, rot := c.Position(), c.Rotation()
 	s.teleport(pos[0], pos[1], pos[2], float32(rot.Yaw()), float32(rot.Pitch()))

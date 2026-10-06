@@ -56,6 +56,7 @@ func (s *Session) SendGameMode(c session.Controllable) {
 	w.Byte(3) // change game mode
 	w.Float32(float32(gameModeID(c.GameMode())))
 	s.queue(v777.ClientboundPlayGameEvent, w)
+	s.updateSelfGameMode(gameModeID(c.GameMode()))
 	s.SendAbilities(c)
 }
 
@@ -83,13 +84,19 @@ func (s *Session) SendAbilities(c session.Controllable) {
 }
 
 // SendRespawn is called when the player respawns. It takes the Java client off its death screen;
-// in the same dimension the client keeps its chunks. (Dimension changes are TODO: the loader has to
-// change worlds and resend chunks.)
+// in the same dimension the client keeps its chunks. A respawn in another world is followed by
+// switchWorld on the next tick.
 func (s *Session) SendRespawn(pos mgl64.Vec3, c session.Controllable) {
 	s.writeRespawn(s.dim, c, 0)
-	s.resendInventory()
 	rot := c.Rotation()
 	s.teleport(pos[0], pos[1], pos[2], float32(rot.Yaw()), float32(rot.Pitch()))
+	// Like vanilla's sendLevelInfo: the client waits on "Loading terrain" until this event.
+	p := s.packet()
+	p.Byte(13) // start waiting for level chunks
+	p.Float32(0)
+	s.queue(v777.ClientboundPlayGameEvent, p)
+	s.resendLevelInfo()
+	s.resendInventory()
 	s.SendAbilities(c)
 }
 
@@ -99,7 +106,7 @@ func (s *Session) SendPlayerSpawn(mgl64.Vec3) {}
 // ViewWorldSpawn ...
 func (s *Session) ViewWorldSpawn(pos cube.Pos) {
 	w := s.packet()
-	w.String("minecraft:overworld")
+	w.String(s.dim)
 	w.Position(pos[0], pos[1], pos[2])
 	w.Float32(0)
 	w.Float32(0)
