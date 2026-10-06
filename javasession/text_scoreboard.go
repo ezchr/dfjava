@@ -10,6 +10,7 @@ import (
 	"github.com/ezchr/go-mc/java/text"
 	v777 "github.com/ezchr/go-mc/java/v777"
 	"github.com/ezchr/go-mc/java/wire"
+	"github.com/google/uuid"
 )
 
 // The sidebar: one objective whose scores are the lines. Each line is a score with a fixed owner
@@ -181,16 +182,16 @@ func (s *Session) applyNameTag(e world.Entity, tag string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	if ts.teams == nil {
-		ts.teams = map[*world.EntityHandle]string{}
+		ts.teams = map[uuid.UUID]string{}
 	}
-	_, exists := ts.teams[e.H()]
+	_, exists := ts.teams[u]
 	if tag == name || tag == p.Name() {
 		if exists { // plain name again: drop the team
 			w := s.packet()
 			w.String(team)
 			w.Byte(1)
 			s.queue(v777.ClientboundPlaySetPlayerTeam, w)
-			delete(ts.teams, e.H())
+			delete(ts.teams, u)
 		}
 		return
 	}
@@ -242,7 +243,7 @@ func (s *Session) applyNameTag(e world.Entity, tag string) {
 		w.String(name)
 	}
 	s.queue(v777.ClientboundPlaySetPlayerTeam, w)
-	ts.teams[e.H()] = team
+	ts.teams[u] = team
 }
 
 // lastColour returns the last colour code in s ("" if none or reset after it).
@@ -308,17 +309,14 @@ func (s *Session) applyScoreTag(e world.Entity, tag string) {
 		return
 	}
 	name := tabName(p.Name())
+	u := p.UUID()
 	ts := s.txt()
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	if tag == "" {
-		if _, shown := ts.scoreShown[e.H()]; shown {
-			w := s.packet()
-			w.String(name)
-			w.Bool(true)
-			w.String(belowObjective)
-			s.queue(v777.ClientboundPlayResetScore, w)
-			delete(ts.scoreShown, e.H())
+		if owner, shown := ts.scoreShown[u]; shown {
+			s.resetScoreTag(owner)
+			delete(ts.scoreShown, u)
 		}
 		return
 	}
@@ -335,7 +333,10 @@ func (s *Session) applyScoreTag(e world.Entity, tag string) {
 		ts.belowName = true
 	}
 	if ts.scoreShown == nil {
-		ts.scoreShown = map[*world.EntityHandle]string{}
+		ts.scoreShown = map[uuid.UUID]string{}
+	}
+	if owner, shown := ts.scoreShown[u]; shown && owner != name {
+		s.resetScoreTag(owner) // renamed: the old score holder would stay
 	}
 	w := s.packet()
 	w.String(name)
@@ -346,5 +347,63 @@ func (s *Session) applyScoreTag(e world.Entity, tag string) {
 	w.VarInt(2)   // fixed
 	writeText(w, tag)
 	s.queue(v777.ClientboundPlaySetScore, w)
-	ts.scoreShown[e.H()] = name
+	ts.scoreShown[u] = name
+}
+
+// resetScoreTag removes the below_name score of the score holder owner. ts.mu is held.
+func (s *Session) resetScoreTag(owner string) {
+	w := s.packet()
+	w.String(owner)
+	w.Bool(true)
+	w.String(belowObjective)
+	s.queue(v777.ClientboundPlayResetScore, w)
+}
+
+// forgetEntityText drops what this client was sent about e's name and score tag: the team that
+// decorates its name is removed and its below_name score reset, so nothing stale is left when e
+// comes back (a player that logs in again under the same UUID with a different tag) and the
+// tables do not grow with every entity the session ever saw. Overrides of entities that are
+// gone for good (closed handles) are dropped too.
+//
+// Hook: entity.go, HideEntity, after the remove_entities packet: s.forgetEntityText(e)
+func (s *Session) forgetEntityText(e world.Entity) {
+	p, ok := e.(*player.Player)
+	if !ok {
+		return
+	}
+	u := p.UUID()
+	v, ok := texts.Load(s)
+	if !ok {
+		return // no text state yet: nothing was sent
+	}
+	ts := v.(*textState)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if team, ok := ts.teams[u]; ok {
+		w := s.packet()
+		w.String(team)
+		w.Byte(1) // remove
+		s.queue(v777.ClientboundPlaySetPlayerTeam, w)
+		delete(ts.teams, u)
+	}
+	if owner, ok := ts.scoreShown[u]; ok {
+		s.resetScoreTag(owner)
+		delete(ts.scoreShown, u)
+	}
+	ts.pruneClosedOverrides()
+}
+
+// pruneClosedOverrides drops the name and score tag overrides of entities whose handle is closed
+// (a player that left: a new login gets a new handle). ts.mu is held.
+func (ts *textState) pruneClosedOverrides() {
+	for h := range ts.nameOverride {
+		if h.Closed() {
+			delete(ts.nameOverride, h)
+		}
+	}
+	for h := range ts.scoreOverride {
+		if h.Closed() {
+			delete(ts.scoreOverride, h)
+		}
+	}
 }

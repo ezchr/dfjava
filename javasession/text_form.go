@@ -384,8 +384,9 @@ func (s *Session) handleClickAction(id string, payload []byte) {
 	}
 	resp, err := formResponse(f, button, vals)
 	if err != nil {
+		// The form is gone from ts.forms: answer it as closed so its Closer still runs.
 		s.log.Debug("form response", "err", err)
-		return
+		resp = nil
 	}
 	s.inTxTx(func(tx *world.Tx, c session.Controllable) {
 		if err := f.SubmitJSON(resp, c, tx); err != nil {
@@ -437,6 +438,11 @@ func formResponse(f form.Form, button int32, vals map[string]any) ([]byte, error
 				out[i] = b != 0
 			case "slider":
 				fv, _ := v.(float32)
+				if math.IsNaN(float64(fv)) || math.IsInf(float64(fv), 0) {
+					// Not a number a slider can hold (the payload is the client's): the
+					// answer is unusable, so the form counts as closed.
+					return nil, errors.New("slider value is not a finite number")
+				}
 				out[i] = roundSlider(float64(fv), e)
 			case "dropdown", "step_slider":
 				s, _ := v.(string)
@@ -506,15 +512,6 @@ func readClickPayload(b []byte) (map[string]any, error) {
 	return nil, errors.New("payload too large")
 }
 
-// readNBTString reads an NBT string (u16 length, modified UTF-8). Our payload strings come from
-// dialog text inputs; modified UTF-8 only differs from UTF-8 for NUL and supplementary characters.
-func readNBTString(r *wire.Reader) string {
-	n := int(r.Uint16())
-	if r.Err != nil || n > r.Len() {
-		r.Err = errors.New("bad NBT string")
-		return ""
-	}
-	s := string(r.B[r.Off : r.Off+n])
-	r.Off += n
-	return s
-}
+// readNBTString reads an NBT string (u16 length, modified UTF-8: an emoji typed into a dialog
+// text input arrives as two surrogates, a NUL as C0 80) as a Go string.
+func readNBTString(r *wire.Reader) string { return text.ReadString(r) }

@@ -85,7 +85,11 @@ type crack struct {
 	start time.Time
 	total time.Duration
 	stage int32
-	timer *time.Timer
+	timer *time.Timer // guarded by fxState.mu, like every field
+	// gen counts the timer chains started for this crack. A timer callback only continues if its
+	// chain is still the current one: one that was already waiting for the lock when the crack
+	// was restarted must not start a second chain.
+	gen uint64
 }
 
 func crackID(pos cube.Pos) int32 {
@@ -111,7 +115,8 @@ func (s *Session) startCrack(pos cube.Pos, total time.Duration) {
 		c.timer.Stop()
 	}
 	c.start, c.total = time.Now(), total
-	s.crackTick(st, pos, c)
+	c.gen++
+	s.crackTick(st, pos, c, c.gen)
 }
 
 // continueCrack changes the break time of a crack (another tool, an effect), keeping its progress.
@@ -132,7 +137,8 @@ func (s *Session) continueCrack(pos cube.Pos, total time.Duration) {
 	if c.timer != nil {
 		c.timer.Stop()
 	}
-	s.crackTick(st, pos, c)
+	c.gen++
+	s.crackTick(st, pos, c, c.gen)
 }
 
 func (s *Session) stopCrack(pos cube.Pos) {
@@ -143,18 +149,23 @@ func (s *Session) stopCrack(pos cube.Pos) {
 	st.mu.Lock()
 	c := st.cracks[pos]
 	delete(st.cracks, pos)
+	if c != nil {
+		if c.timer != nil {
+			c.timer.Stop()
+			c.timer = nil
+		}
+		c.gen++ // a callback already waiting for the lock ends its chain
+	}
 	st.mu.Unlock()
 	if c == nil {
 		return
 	}
-	if c.timer != nil {
-		c.timer.Stop()
-	}
 	s.blockDestruction(c.id, pos, 255) // any stage outside 0-9 removes the overlay
 }
 
-// crackTick sends the crack's current stage and schedules the next one. st.mu is held.
-func (s *Session) crackTick(st *fxState, pos cube.Pos, c *crack) {
+// crackTick sends the crack's current stage and schedules the next one, as timer chain gen.
+// st.mu is held.
+func (s *Session) crackTick(st *fxState, pos cube.Pos, c *crack, gen uint64) {
 	elapsed := time.Since(c.start)
 	stage := int32(elapsed * 10 / c.total)
 	if stage > 9 {
@@ -172,8 +183,8 @@ func (s *Session) crackTick(st *fxState, pos cube.Pos, c *crack) {
 	c.timer = time.AfterFunc(next, func() {
 		st.mu.Lock()
 		defer st.mu.Unlock()
-		if st.cracks[pos] == c {
-			s.crackTick(st, pos, c)
+		if st.cracks[pos] == c && c.gen == gen {
+			s.crackTick(st, pos, c, gen)
 		}
 	})
 }
@@ -193,7 +204,9 @@ func (st *fxState) stopCracks() {
 	for _, c := range st.cracks {
 		if c.timer != nil {
 			c.timer.Stop()
+			c.timer = nil
 		}
+		c.gen++
 	}
 	clear(st.cracks)
 }

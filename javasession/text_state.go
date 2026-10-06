@@ -9,6 +9,7 @@ import (
 	"github.com/ezchr/go-mc/java/text"
 	v777 "github.com/ezchr/go-mc/java/v777"
 	"github.com/ezchr/go-mc/java/wire"
+	"github.com/google/uuid"
 )
 
 // textState is the per-session state of the text features: what the client shows now, so updates
@@ -34,15 +35,21 @@ type textState struct {
 	dialogues map[int32]dialogue.Dialogue
 	nextForm  int32
 
-	// Name and score tags of other players.
+	// Name and score tags of other players. The overrides are per entity handle, like Dragonfly's
+	// ViewLayer; what was sent is per UUID, since that is what the client keys teams and scores
+	// by (a player that logs in again has a new handle but the same UUID). forgetEntityText
+	// clears an entity's entries when it leaves view; the whole state goes with the session.
 	nameOverride  map[*world.EntityHandle]string
-	teams         map[*world.EntityHandle]string // team name -> sent for this entity
+	teams         map[uuid.UUID]string // the team sent for this player
 	scoreOverride map[*world.EntityHandle]string
-	scoreShown    map[*world.EntityHandle]string // owner name the score tag was sent for
+	scoreShown    map[uuid.UUID]string // the score holder the score tag was sent for
 	belowName     bool
 
 	// Hash of the last commands tree sent.
 	cmdHash uint64
+
+	// The sign edit OpenSign allowed.
+	sign signGrant
 }
 
 var texts sync.Map // *Session -> *textState
