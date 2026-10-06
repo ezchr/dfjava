@@ -35,7 +35,6 @@ func (*Session) EnableCoordinates(_ bool)    {}
 func (*Session) EnableInstantRespawn(_ bool) {}
 func (*Session) HandleInventories(_ *world.Tx, _ session.Controllable, _ *inventory.Inventory, _ *inventory.Inventory, _ *inventory.Inventory, _ *inventory.Inventory, _ *inventory.Armour, _ *uint32) {
 }
-func (*Session) HideEntity(_ world.Entity)                  {}
 func (*Session) HideHudElement(_ hud.Element)               {}
 func (*Session) HudElementHidden(_ hud.Element) bool        { return false }
 func (*Session) InputLocked(_ input.Lock) bool              { return false }
@@ -89,24 +88,17 @@ func (*Session) UnlockInput(_ input.Lock)                                       
 func (*Session) UpdateTradeOffers(_ []session.TradeOffer)                            {}
 func (*Session) ViewAlwaysShowNameTag(_ world.Entity, _ bool)                        {}
 func (*Session) ViewBlockAction(_ cube.Pos, _ world.BlockAction)                     {}
-func (*Session) ViewBlockUpdate(_ cube.Pos, _ world.Block, _ int)                    {}
 func (*Session) ViewBrewingUpdate(_ time.Duration, _ time.Duration, _ int32, _ int32, _ int32, _ int32) {
 }
-func (*Session) ViewEmote(_ world.Entity, _ uuid.UUID)                                        {}
-func (*Session) ViewEntity(_ world.Entity)                                                    {}
-func (*Session) ViewEntityAction(_ world.Entity, _ world.EntityAction)                        {}
-func (*Session) ViewEntityAnimation(_ world.Entity, _ world.EntityAnimation)                  {}
-func (*Session) ViewEntityArmour(_ world.Entity)                                              {}
-func (*Session) ViewEntityDismount(_ world.Entity, _ world.Entity)                            {}
-func (*Session) ViewEntityDisplacement(_ world.Entity, _ mgl64.Vec3, _ cube.Rotation, _ bool) {}
-func (*Session) ViewEntityGameMode(_ world.Entity)                                            {}
-func (*Session) ViewEntityItems(_ world.Entity)                                               {}
-func (*Session) ViewEntityMount(_ world.Entity, _ world.Entity, _ bool)                       {}
-func (*Session) ViewEntityMovement(_ world.Entity, _ mgl64.Vec3, _ cube.Rotation, _ bool)     {}
-func (*Session) ViewEntityState(_ world.Entity)                                               {}
-func (*Session) ViewEntityTeleport(_ world.Entity, _ mgl64.Vec3)                              {}
-func (*Session) ViewEntityVelocity(_ world.Entity, _ mgl64.Vec3)                              {}
-func (*Session) ViewEntityWake(_ world.Entity)                                                {}
+func (*Session) ViewEmote(_ world.Entity, _ uuid.UUID)                       {}
+func (*Session) ViewEntityAnimation(_ world.Entity, _ world.EntityAnimation) {}
+func (*Session) ViewEntityArmour(_ world.Entity)                             {}
+func (*Session) ViewEntityDismount(_ world.Entity, _ world.Entity)           {}
+func (*Session) ViewEntityGameMode(_ world.Entity)                           {}
+func (*Session) ViewEntityItems(_ world.Entity)                              {}
+func (*Session) ViewEntityMount(_ world.Entity, _ world.Entity, _ bool)      {}
+func (*Session) ViewEntityState(_ world.Entity)                              {}
+func (*Session) ViewEntityWake(_ world.Entity)                               {}
 func (*Session) ViewFurnaceUpdate(_ time.Duration, _ time.Duration, _ time.Duration, _ time.Duration, _ time.Duration, _ time.Duration) {
 }
 func (*Session) ViewItemCooldown(_ world.Item, _ time.Duration)         {}

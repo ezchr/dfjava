@@ -32,6 +32,11 @@ type Session struct {
 	ent     *world.EntityHandle
 	onClose func(*world.Tx, session.Controllable)
 
+	// Java entity ids of the entities this client sees (it is selfEntityID itself).
+	entMu        sync.Mutex
+	entityIDs    map[*world.EntityHandle]int32
+	nextEntityID int32
+
 	chunkRadius int32
 	loader      *world.Loader
 	lastCentre  world.ChunkPos
@@ -75,6 +80,7 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 		chunkRadius: radius,
 		wake:        make(chan struct{}, 1),
 		closed:      make(chan struct{}),
+		entityIDs:   map[*world.EntityHandle]int32{},
 	}
 	s.chunkRate.Store(9000) // vanilla's starting rate: 9 chunks per tick
 	s.writers.New = func() any { return &wire.Writer{B: make([]byte, 0, 256)} }
@@ -167,15 +173,27 @@ func (s *Session) CloseConnection() {
 
 // Close is called by the player when it is closed (in its world transaction, or with a nil tx if
 // its world is gone). It hands the player to the server's close handler, which saves their data.
+//
+// Same order as the Bedrock session: save the player, close the chunk loader, and only then
+// remove the player entity from the world (a player with a session is removed by the session).
 func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 	s.closeOnce.Do(func() {
-		if s.loader != nil && tx != nil {
-			s.loader.Close(tx)
-		}
-		s.CloseConnection()
 		if s.onClose != nil {
 			s.onClose(tx, c)
 		}
+		if tx != nil {
+			if s.loader != nil {
+				s.loader.Close(tx)
+			}
+			tx.RemoveEntity(c)
+			if s.ent != nil {
+				_ = s.ent.Close()
+			}
+		}
+		s.CloseConnection()
+		s.entMu.Lock()
+		clear(s.entityIDs)
+		s.entMu.Unlock()
 	})
 }
 

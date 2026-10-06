@@ -32,7 +32,8 @@ func blocks() *blockInfo {
 
 // chunkState is per-session chunk sending state.
 type chunkState struct {
-	inBatch int // chunks queued in the batch being built this tick
+	batching bool // inside sendChunkBatch: chunks go into a batch
+	inBatch  int  // chunks queued in the batch being built this tick
 }
 
 // sendChunkBatch loads chunks around the player as one batch, at most the rate the client asked
@@ -46,7 +47,9 @@ func (s *Session) sendChunkBatch(tx *world.Tx) {
 		n = 1
 	}
 	s.chunks.inBatch = 0
+	s.chunks.batching = true
 	s.loader.Load(tx, n)
+	s.chunks.batching = false
 	if s.chunks.inBatch > 0 {
 		p := s.packet()
 		p.VarInt(int32(s.chunks.inBatch))
@@ -58,10 +61,14 @@ func (s *Session) sendChunkBatch(tx *world.Tx) {
 
 // ViewChunk encodes a chunk the loader made available.
 func (s *Session) ViewChunk(pos world.ChunkPos, dim world.Dimension, blockEntities map[cube.Pos]world.Block, c *chunk.Chunk) {
-	if s.chunks.inBatch == 0 {
-		s.queue(v777.ClientboundPlayChunkBatchStart, s.packet())
+	// Chunks the loader hands over outside a batch tick (when it moves) go out on their own; the
+	// client accepts chunks outside batches, batches only pace the sending.
+	if s.chunks.batching {
+		if s.chunks.inBatch == 0 {
+			s.queue(v777.ClientboundPlayChunkBatchStart, s.packet())
+		}
+		s.chunks.inBatch++
 	}
-	s.chunks.inBatch++
 	p := s.packet()
 	col := s.column(pos, c)
 	encMu.Lock()
