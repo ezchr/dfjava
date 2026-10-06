@@ -87,6 +87,7 @@ func (s *Session) SendAbilities(c session.Controllable) {
 // in the same dimension the client keeps its chunks. A respawn in another world is followed by
 // switchWorld on the next tick.
 func (s *Session) SendRespawn(pos mgl64.Vec3, c session.Controllable) {
+	s.closeWindowsAfterRespawn()
 	s.writeRespawn(s.dim, c, 0)
 	rot := c.Rotation()
 	s.teleport(pos[0], pos[1], pos[2], float32(rot.Yaw()), float32(rot.Pitch()))

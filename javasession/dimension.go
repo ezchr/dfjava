@@ -37,6 +37,7 @@ func (s *Session) writeRespawn(dim string, c session.Controllable, keep byte) {
 
 // switchWorld follows the player into another world (portals, teleports between worlds).
 func (s *Session) switchWorld(tx *world.Tx, w *world.World, c session.Controllable) {
+	s.closeWindows(tx, c)
 	if dim := dimensionKey(w.Dimension()); dim != s.dim {
 		s.dim = dim
 		s.forgetAllChunks(false)
