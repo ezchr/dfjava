@@ -58,6 +58,7 @@ func blocksFor(v *version.Version) *blockInfo {
 		}
 	}
 	bi.encoder = jchunk.NewEncoder(v.BlockStates, v.Biomes)
+	bi.encoder.LongMasks = v.Protocol < 777 // 26.3 switched light masks to bytes
 	actual, _ := versionBlocks.LoadOrStore(v, bi)
 	return actual.(*blockInfo)
 }
