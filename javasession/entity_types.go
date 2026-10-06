@@ -35,6 +35,13 @@ var javaEntityName = map[string]string{
 	"dragonfly:text":                   "minecraft:text_display",
 }
 
+// RegisterEntityAlias shows entities of a custom Bedrock type (a server's own entity, such as
+// "zid:gubby") to Java players as a Java entity type ("minecraft:rabbit"). An empty java hides
+// them. Call it before players join.
+func RegisterEntityAlias(bedrock, java string) {
+	javaEntityName[bedrock] = java
+}
+
 // networkEncoded is implemented by entities with a network id other than their save id.
 type networkEncoded interface {
 	NetworkEncodeEntity() string
