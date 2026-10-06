@@ -269,6 +269,7 @@ func (s *Session) cleanup() {
 		}
 		forgetProfile(s.id)
 		forgetProfile(s.selfID)
+		untrackJavaSession(s.id)
 		if s.peer != nil {
 			session.RemovePeer(s.peer)
 		}
@@ -315,6 +316,7 @@ func (s *Session) Close(tx *world.Tx, c session.Controllable) {
 func (s *Session) Spawn(c session.Controllable, tx *world.Tx) {
 	s.ent = c.H()
 	s.spawned.Store(true)
+	trackJavaSession(s.id, s)
 	s.SendHealth(c.Health(), c.MaxHealth(), c.Absorption())
 	s.SendFood(c.Food(), 0, 0)
 	s.SendExperience(c.ExperienceLevel(), c.ExperienceProgress())

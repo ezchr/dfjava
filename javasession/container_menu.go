@@ -105,6 +105,12 @@ type menu struct {
 	inv   *inventory.Inventory // the block's inventory, nil for windows with inputs in the UI inventory
 	ender bool
 
+	// virtual: a window on an inventory with no block behind it (OpenInventory). onClose is
+	// called when it closes; shown is what the client was last sent, for refreshVirtual.
+	virtual bool
+	onClose func()
+	shown   []item.Stack
+
 	cookTotal int32 // furnaces: cooking time in ticks
 	smoker    bool
 

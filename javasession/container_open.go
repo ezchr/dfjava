@@ -104,10 +104,16 @@ func (s *Session) closeMenu(tx *world.Tx, c session.Controllable, send bool) {
 	c.MoveItemsToInventory()
 	st.applying.Store(false)
 	s.sendInventory()
+	if m.virtual && m.onClose != nil {
+		m.onClose()
+	}
 }
 
 // removeViewer tells the block of window m (in tx's world) that the session no longer views it.
 func (s *Session) removeViewer(tx *world.Tx, m *menu) {
+	if m.virtual {
+		return // no block
+	}
 	switch b := tx.Block(m.pos).(type) {
 	case block.EnderChest:
 		if m.ender {
@@ -124,7 +130,7 @@ func (s *Session) removeViewer(tx *world.Tx, m *menu) {
 // chest a new inventory when it pairs or unpairs, and the old one must not be used any more (it
 // still holds the items: taking them would duplicate them).
 func (s *Session) menuStillValid(tx *world.Tx, c session.Controllable, m *menu) bool {
-	if m.kind == menuPlayer {
+	if m.kind == menuPlayer || m.virtual {
 		return true
 	}
 	if tx.World() != m.w || c.Position().Sub(m.pos.Vec3Centre()).Len() > 8 {
@@ -196,6 +202,9 @@ func (s *Session) checkMenu(tx *world.Tx, c session.Controllable) {
 		return
 	}
 	m.lastCheck = now
+	if m.virtual {
+		s.refreshVirtual(m)
+	}
 	if s.menuStillValid(tx, c, m) {
 		return
 	}
