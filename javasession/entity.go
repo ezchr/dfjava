@@ -80,7 +80,7 @@ func (s *Session) ViewEntity(e world.Entity) {
 	w := s.packet()
 	w.VarInt(id)
 	w.UUID(u)
-	w.VarInt(entityTypePlayer)
+	w.VarInt(s.ver.Builtin("minecraft:entity_type", entityTypePlayer))
 	w.Float64(pos[0])
 	w.Float64(pos[1])
 	w.Float64(pos[2])
@@ -316,7 +316,7 @@ func (s *Session) ViewBlockUpdate(pos cube.Pos, b world.Block, layer int) {
 		return // water layer changes: waterlogging fixer to come
 	}
 	rid := world.BlockRuntimeID(b)
-	bi := blocks()
+	bi := s.blk
 	if int(rid) >= len(bi.java) {
 		return
 	}

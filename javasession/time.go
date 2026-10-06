@@ -18,7 +18,7 @@ func (s *Session) ViewTime(t int) {
 	w := s.packet()
 	w.Int64(int64(t)) // game time
 	w.VarInt(1)
-	w.VarInt(v777.RegistryID("minecraft:world_clock", "minecraft:overworld"))
+	w.VarInt(s.ver.RegistryID("minecraft:world_clock", "minecraft:overworld"))
 	w.VarLong(int64(t))
 	w.Float32(0)
 	w.Float32(rate)

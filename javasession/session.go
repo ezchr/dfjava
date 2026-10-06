@@ -20,6 +20,7 @@ import (
 	jchunk "github.com/ezchr/go-mcjava/chunk"
 	"github.com/ezchr/go-mcjava/server"
 	v777 "github.com/ezchr/go-mcjava/v777"
+	"github.com/ezchr/go-mcjava/version"
 	"github.com/ezchr/go-mcjava/wire"
 	"github.com/go-gl/mathgl/mgl64"
 	"github.com/google/uuid"
@@ -35,6 +36,10 @@ type Session struct {
 	skin skin.Skin
 	peer *session.Peer // how Bedrock clients list this player
 	conn *wire.Conn
+	// ver is the client's protocol version. The session writes v777 (26.3) ids everywhere and
+	// remaps them with ver where they are written; blk is the block table for ver.
+	ver *version.Version
+	blk *blockInfo
 
 	ent     *world.EntityHandle
 	onClose func(*world.Tx, session.Controllable)
@@ -102,6 +107,7 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 		log:         log.With("player", jp.Profile.Name, "edition", "java"),
 		jp:          jp,
 		conn:        jp.Conn,
+		ver:         jp.Version,
 		chunkRadius: radius,
 		wake:        make(chan struct{}, 1),
 		closed:      make(chan struct{}),
@@ -111,6 +117,10 @@ func newSession(jp *server.Player, radius int32, log *slog.Logger) *Session {
 	}
 	s.tab.shown = map[uuid.UUID]tabShown{}
 	s.chunks.sent = map[world.ChunkPos]struct{}{}
+	if s.ver == nil {
+		s.ver = version.Newest
+	}
+	s.blk = blocksFor(s.ver)
 	s.chunkRate.Store(9000) // vanilla's starting rate: 9 chunks per tick
 	s.writers.New = func() any { return &wire.Writer{B: make([]byte, 0, 256)} }
 	go s.writeLoop()
@@ -174,7 +184,10 @@ func (s *Session) writeLoop() {
 		batch, s.out = s.out, batch[:0]
 		s.outMu.Unlock()
 		for _, p := range batch {
-			err := s.conn.WritePacket(p.id, p.w.B)
+			var err error
+			if id := s.ver.ClientboundPlay(p.id); id >= 0 { // -1: the client's version has no such packet
+				err = s.conn.WritePacket(id, p.w.B)
+			}
 			if cap(p.w.B) <= 1<<16 { // don't keep huge chunk buffers around
 				s.writers.Put(p.w)
 			}
@@ -407,7 +420,12 @@ func (s *Session) readLoop() {
 			s.log.Debug("read", "err", err)
 			return
 		}
-		if err := s.handle(id, body); err != nil {
+		if nid := s.ver.ServerboundPlay(id); nid >= 0 {
+			err = s.handle(nid, body)
+		} else {
+			err = s.handleLegacy(id, body)
+		}
+		if err != nil {
 			s.log.Info("bad packet", "id", id, "err", err)
 			s.Disconnect("Bad packet")
 			return

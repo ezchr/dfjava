@@ -143,7 +143,7 @@ func (s *Session) sendLogin(pc player.Config, w *world.World) {
 	p.Bool(false)           // reduced debug info
 	p.Bool(true)            // death screen
 	p.Bool(false)           // limited crafting
-	p.VarInt(v777.RegistryID("minecraft:dimension_type", dim))
+	p.VarInt(s.ver.RegistryID("minecraft:dimension_type", dim))
 	p.String(dim)
 	p.Int64(0)                        // hashed seed (biome noise; unknown to us)
 	p.VarInt(gameModeID(pc.GameMode)) // game mode

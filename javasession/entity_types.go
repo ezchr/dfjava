@@ -90,6 +90,14 @@ func velocity(e world.Entity) mgl64.Vec3 {
 // viewOtherEntity spawns a non-player entity.
 func (s *Session) viewOtherEntity(e world.Entity) {
 	typ, data, ok := javaEntity(e)
+	if ok {
+		// The client's own ids: entity types and the falling block's state.
+		if typ = s.ver.Builtin("minecraft:entity_type", typ); typ < 0 {
+			ok = false
+		} else if typ == s.ver.BuiltinID("minecraft:entity_type", "minecraft:falling_block") {
+			data = s.ver.BlockState(data)
+		}
+	}
 	if !ok {
 		if _, seen := skippedTypes.LoadOrStore(e.H().Type().EncodeEntity(), true); !seen {
 			s.log.Info("no Java entity for this type; Java players do not see it", "type", e.H().Type().EncodeEntity())

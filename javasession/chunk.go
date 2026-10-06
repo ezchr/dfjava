@@ -17,18 +17,24 @@ type blockInfo struct {
 	waterlogged []uint32 // Java state when the block's second layer holds water
 	air         []bool   // counts as air (not counted in a section's block count)
 	fluid       []bool   // has a fluid (counted in a section's fluid count)
+	biomes      []uint32 // 26.3 biome id -> the version's (nil: unchanged)
+
+	// encoder encodes chunks for the version (the palette widths depend on its registry sizes);
+	// nil: the shared 26.3 encoder.
+	encoder *jchunk.Encoder
+	encMu   sync.Mutex
 }
 
 var (
 	infoOnce sync.Once
-	info     blockInfo
+	info     *blockInfo
 	encoder  = jchunk.NewEncoder(jchunk.VanillaBlockStates, jchunk.VanillaBiomes)
 	encMu    sync.Mutex // the encoder keeps scratch buffers
 )
 
 func blocks() *blockInfo {
 	infoOnce.Do(func() { info = buildBlockInfo() })
-	return &info
+	return info
 }
 
 // chunkState is per-session chunk sending state.
@@ -78,9 +84,16 @@ func (s *Session) ViewChunk(pos world.ChunkPos, dim world.Dimension, blockEntiti
 	}
 	p := s.packet()
 	col := s.column(pos, c)
-	encMu.Lock()
-	err := encoder.Encode(p, col)
-	encMu.Unlock()
+	var err error
+	if enc := s.blk.encoder; enc != nil {
+		s.blk.encMu.Lock()
+		err = enc.Encode(p, col)
+		s.blk.encMu.Unlock()
+	} else {
+		encMu.Lock()
+		err = encoder.Encode(p, col)
+		encMu.Unlock()
+	}
 	if err != nil {
 		s.log.Error("encode chunk", "pos", pos, "err", err)
 		return
@@ -129,7 +142,7 @@ func (s *Session) forgetChunk(pos world.ChunkPos) {
 
 // column converts a Dragonfly chunk. The Column is reused per session.
 func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
-	bi := blocks()
+	bi := s.blk
 	col := &s.col
 	col.X, col.Z = pos[0], pos[1]
 	subs := c.Sub()
@@ -194,7 +207,11 @@ func (s *Session) column(pos world.ChunkPos, c *chunk.Chunk) *jchunk.Column {
 			for z := 0; z < 4; z++ {
 				for x := 0; x < 4; x++ {
 					b := c.Biome(uint8(x*4+2), int16(baseY+y*4+2), uint8(z*4+2))
-					sec.Biomes[jchunk.BiomeIndex(x, y, z)] = biomeID(b)
+					id := biomeID(b)
+					if bi.biomes != nil && int(id) < len(bi.biomes) {
+						id = bi.biomes[id]
+					}
+					sec.Biomes[jchunk.BiomeIndex(x, y, z)] = id
 				}
 			}
 		}

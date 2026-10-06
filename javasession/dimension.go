@@ -21,7 +21,7 @@ func dimSections(dim string) int {
 // writeRespawn sends the respawn packet for dim. keep: 1 attributes, 2 entity data.
 func (s *Session) writeRespawn(dim string, c session.Controllable, keep byte) {
 	w := s.packet()
-	w.VarInt(v777.RegistryID("minecraft:dimension_type", dim))
+	w.VarInt(s.ver.RegistryID("minecraft:dimension_type", dim))
 	w.String(dim)
 	w.Int64(0)
 	w.VarInt(gameModeID(c.GameMode()))
