@@ -67,6 +67,9 @@ func (s *Session) handleInput(id int32, body []byte) (bool, error) {
 	switch id {
 	case v777.ServerboundPlayPlayerAction:
 		action := r.VarInt()
+		if s.ver.Protocol < 777 && action >= actionChangeDestroyDirection {
+			action++ // 26.3 inserted CHANGE_DESTROY_DIRECTION at 1
+		}
 		x, y, z := r.Position()
 		face := cube.Face(r.Byte())
 		seq := r.VarInt()
